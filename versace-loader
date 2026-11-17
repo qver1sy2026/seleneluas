@@ -1,0 +1,1749 @@
+local var_0_0 = require
+local var_0_1 = require("ffi")
+local var_0_2 = require("gamesense/http")
+local var_0_3 = require("json")
+local var_0_4 = require("gamesense/base64")
+local var_0_5 = require("gamesense/discord_webhooks")
+local var_0_6 = entity.get_prop
+local var_0_7 = client.color_log
+local var_0_8 = client.create_interface
+local var_0_9 = client.delay_call
+local var_0_10 = client.reload_active_scripts
+local var_0_11 = client.screen_size
+local var_0_12 = client.set_event_callback
+local var_0_13 = client.system_time
+local var_0_14 = database.read
+local var_0_15 = database.write
+local var_0_16 = globals.frametime
+local var_0_17 = var_0_3.parse
+local var_0_18 = math.floor
+local var_0_19 = panorama.open
+local var_0_20 = renderer.line
+local var_0_21 = renderer.measure_text
+local var_0_22 = require
+local var_0_23 = error
+local var_0_24 = renderer.rectangle
+local var_0_25 = renderer.text
+local var_0_26 = string.byte
+local var_0_27 = string.char
+local var_0_28 = string.format
+local var_0_29 = string.sub
+local var_0_30 = table.remove
+local var_0_31 = tonumber
+local var_0_32 = loadstring
+local var_0_33 = print
+local var_0_34 = tostring
+local var_0_35 = pcall
+local var_0_36 = pairs
+local var_0_37 = ui.get
+local var_0_38 = ui.new_label
+local var_0_39 = ui.new_multiselect
+local var_0_40 = ui.reference
+local var_0_41 = ui.set
+local var_0_42 = ui.set_callback
+local var_0_43 = panorama.open()
+local var_0_44 = var_0_43.MyPersonaAPI.GetName()
+local var_0_45 = var_0_43.MyPersonaAPI.GetXuid()
+
+local real_loader_data = {
+    user = 'admin',
+    hwid = '',
+    logged_in = false,
+    access = {}
+}
+
+local loader_proxy = newproxy(true)
+local loader_meta = getmetatable(loader_proxy)
+
+loader_meta.__index = function(t, k)
+    return real_loader_data[k]
+end
+
+loader_meta.__newindex = function(t, k, v)
+    real_loader_data[k] = v
+end
+
+loader_meta.__pairs = function() return function() end end -- Пустой итератор
+loader_meta.__ipairs = function() return function() end end -- Пустой итератор
+loader_meta.__metatable = "Restricted" -- Запрет на получение метатаблицы
+
+_G.loader = loader_proxy
+_G._user_name = ""
+
+-- Улучшенная многоуровневая защита от дампа
+local function setup_advanced_protection()
+    local entropy_seed = math.random(1000, 9999)
+    
+    local function xor_byte(a, b)
+        a = a % 256
+        b = b % 256
+        local result = 0
+        local p = 1
+        for i = 1, 8 do
+            local ba = a % 2
+            local bb = b % 2
+            if ba ~= bb then
+                result = result + p
+            end
+            a = math.floor(a / 2)
+            b = math.floor(b / 2)
+            p = p * 2
+        end
+        return result
+    end
+    
+    local function xor_encrypt(str, key)
+        local result = {}
+        for i = 1, #str do
+            result[i] = string.char(xor_byte(string.byte(str, i), key))
+        end
+        return table.concat(result)
+    end
+    
+    local xor_key = (0xAB + entropy_seed) % 256
+    
+    -- === ЗАЩИТА СЛОЙ 2: Global Flood (Замусоривание) ===
+    -- Создаем тысячи мусорных переменных, чтобы сбить дамперы с толку
+    local junk_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for i = 1, 2000 do
+        local name = ""
+        for j = 1, math.random(5, 15) do
+            local idx = math.random(1, #junk_chars)
+            name = name .. string.sub(junk_chars, idx, idx)
+        end
+        _G[name] = function() return entropy_seed * i end
+    end
+    -- ===================================================
+
+    local encrypted_patterns = {
+        xor_encrypt("os.remove", xor_key),
+        xor_encrypt("package.loadlib", xor_key),
+        xor_encrypt("io.open", xor_key),
+        xor_encrypt("dumper", xor_key),
+        xor_encrypt("inject", xor_key),
+        xor_encrypt("meowhook", xor_key),
+        xor_encrypt("debugger", xor_key),
+        xor_encrypt("processhacker", xor_key),
+        xor_encrypt("cheatengine", xor_key),
+        xor_encrypt("ollydbg", xor_key),
+        xor_encrypt("decompile", xor_key),
+        xor_encrypt("luac.compile", xor_key),
+        xor_encrypt("debug.getlocal", xor_key),
+        xor_encrypt("debug.getupvalue", xor_key),
+        xor_encrypt("require('dump')", xor_key),
+        xor_encrypt("metatable.__index", xor_key),
+        xor_encrypt("getfenv", xor_key),
+        xor_encrypt("setfenv", xor_key),
+        xor_encrypt("save_to_file", xor_key),
+        xor_encrypt("proxy_load", xor_key),
+        xor_encrypt("random_filename", xor_key),
+        xor_encrypt("debug.debug", xor_key),
+        xor_encrypt("os.execute", xor_key),
+        xor_encrypt("io.popen", xor_key),
+        xor_encrypt("loadfile", xor_key),
+        xor_encrypt("dofile", xor_key)
+    }
+    
+    local function decrypt_pattern(enc_str)
+        return xor_encrypt(enc_str, xor_key)
+    end
+    
+    local original_functions = {
+        load = _G.load,
+        loadstring = _G.loadstring,
+        require = _G.require,
+        getmetatable = _G.getmetatable,
+        setmetatable = _G.setmetatable,
+        pcall = _G.pcall,
+        xpcall = _G.xpcall,
+        debug = debug,
+        string = string,
+        ffi = _G.ffi or var_0_1,
+        writefile = _G.writefile,
+        string_dump = string.dump,
+        os_execute = os and os.execute,
+        io_open = io and io.open,
+        io_popen = io and io.popen,
+        loadfile = _G.loadfile,
+        dofile = _G.dofile
+    }
+
+    -- === ЗАЩИТА СЛОЙ 3: Honeypots ===
+    local honeypot_names = {"__dump_cache", "secret_loader_data", "source_code_ref", "decrypted_script"}
+    for _, name in ipairs(honeypot_names) do
+        local trap = newproxy(true)
+        local meta = getmetatable(trap)
+        meta.__index = function() 
+             -- Агрессивный краш при попытке доступа
+             while true do end 
+        end
+        meta.__newindex = function() error("Memory Violation", 0) end
+        meta.__tostring = function() return "restricted_memory" end
+        _G[name] = trap
+    end
+    
+    local function simple_hash(func)
+        local str = tostring(func)
+        local hash = entropy_seed
+        for i = 1, #str do
+            hash = (hash * 37 + string.byte(str, i)) % 0x100000000
+        end
+        return hash
+    end
+    
+    local integrity_targets = {}
+    local function track_integrity_target(name, getter)
+        table.insert(integrity_targets, {
+            name = name,
+            get = getter,
+            expected = getter()
+        })
+    end
+
+    local security_compromised = false
+    local security_warning_logged = false
+    local blacklist_processes = {
+        "x64dbg.exe", "x32dbg.exe", "ida64.exe", "ida.exe", "idag.exe",
+        "idag64.exe", "processhacker.exe", "cheat engine.exe",
+        "cheatengine-x86_64.exe", "httpdebuggerui.exe", "fiddler.exe",
+        "wireshark.exe", "ollydbg.exe",
+        "fiddler everywhere.exe", "networkminer.exe", "smartsniff.exe",
+        "procmon.exe", "systeminformer.exe", "hxd.exe", "binaryninja.exe",
+        "ghidra.exe", "radare2.exe", "scyllahide.exe", "immunitydebugger.exe",
+        "windbg.exe", "cheatengine.exe", "cheatengine-i386.exe",
+        "cheatengine-x86_64.exe", "scanmem.exe", "processhacker.exe"
+    }
+
+    -- Titles copied from Varg's blocked_window_titles list.
+    local blocked_window_titles = {
+        "HTTP Debugger", "Wireshark Analyzer", "Analizator Wireshark",
+        "Fiddler Everywhere", "Progress Telerik Fiddler Web Debugger",
+        "NetworkMiner Professional 1.0", "SmartSniff",
+        "Process Monitor - Sysinternals: www.sysinternals.com",
+        "System Informer", "antidbg", "ID", "HxD", "Binary Ninja",
+        "Ghidra", "Radare2", "Cheat Engine", "Cheat Engine 7.5",
+        "ScyllaHide", "ObsidianGUI", "Immunity Debugger", "ollydbg",
+        "OLLYDBG", "ida", "IDA", "Cheat Engine x86", "Cheat Engine x64",
+        "Cheat Engine GUI", "ScanMem", "Rock Debugger", "WinDbgFrameClass",
+        "Zeta Debugger", "XTPMainFrame", "TStdHttpAnalyzerForm", "x32dbg",
+        "Process Hacker"
+    }
+
+    local function warn_native_checks_unavailable()
+        if not security_warning_logged then
+            security_warning_logged = true
+            client.color_log(255, 180, 0, "[versace] Native security checks unavailable")
+        end
+    end
+
+    local function initialize_native_checks()
+        local cdef_ok = pcall(var_0_1.cdef, [[
+            typedef void* versace_HANDLE;
+            typedef unsigned long versace_DWORD;
+            typedef int versace_BOOL;
+            typedef struct versace_PROCESSENTRY32 {
+                versace_DWORD dwSize;
+                versace_DWORD cntUsage;
+                versace_DWORD th32ProcessID;
+                size_t th32DefaultHeapID;
+                versace_DWORD th32ModuleID;
+                versace_DWORD cntThreads;
+                versace_DWORD th32ParentProcessID;
+                long pcPriClassBase;
+                versace_DWORD dwFlags;
+                char szExeFile[260];
+            } versace_PROCESSENTRY32;
+            versace_HANDLE CreateToolhelp32Snapshot(versace_DWORD, versace_DWORD);
+            versace_BOOL Process32First(versace_HANDLE, versace_PROCESSENTRY32*);
+            versace_BOOL Process32Next(versace_HANDLE, versace_PROCESSENTRY32*);
+            versace_BOOL CloseHandle(versace_HANDLE);
+            typedef void* versace_HKEY;
+            typedef long versace_LSTATUS;
+            versace_LSTATUS RegOpenKeyExA(versace_HKEY, const char*, versace_DWORD, versace_DWORD, versace_HKEY*);
+            versace_LSTATUS RegQueryValueExA(versace_HKEY, const char*, versace_DWORD*, versace_DWORD*, unsigned char*, versace_DWORD*);
+            versace_LSTATUS RegCloseKey(versace_HKEY);
+            typedef void* versace_HWND;
+            versace_HWND FindWindowA(const char*, const char*);
+            versace_BOOL IsDebuggerPresent(void);
+            versace_HANDLE GetCurrentProcess(void);
+            versace_BOOL CheckRemoteDebuggerPresent(versace_HANDLE, versace_BOOL*);
+        ]])
+        if not cdef_ok then
+            warn_native_checks_unavailable()
+            return nil, nil
+        end
+
+        local kernel_ok, kernel32 = pcall(var_0_1.load, "Kernel32.dll")
+        local registry_ok, advapi32 = pcall(var_0_1.load, "Advapi32.dll")
+        local user_ok, user32 = pcall(var_0_1.load, "User32.dll")
+        if not kernel_ok or not registry_ok then
+            warn_native_checks_unavailable()
+            return nil, nil, nil
+        end
+        if not user_ok then user32 = nil end
+        return kernel32, advapi32, user32
+    end
+
+    local kernel32, advapi32, user32 = initialize_native_checks()
+
+    local function read_registry_string(root, subkey, value_name)
+        if advapi32 == nil then
+            return nil
+        end
+
+        local handle = var_0_1.new("versace_HKEY[1]")
+        local status = advapi32.RegOpenKeyExA(root, subkey, 0, 0x20019, handle)
+        if status ~= 0 then
+            return nil
+        end
+
+        local length = var_0_1.new("versace_DWORD[1]", 512)
+        local buffer = var_0_1.new("unsigned char[512]")
+        status = advapi32.RegQueryValueExA(handle[0], value_name, nil, nil, buffer, length)
+        advapi32.RegCloseKey(handle[0])
+        if status ~= 0 or length[0] == 0 then
+            return nil
+        end
+        return var_0_1.string(buffer, length[0] - 1)
+    end
+
+    local function check_odyssey_security()
+        -- Varg: check visible debugger / packet-inspection windows.
+        if user32 ~= nil then
+            for _, title in ipairs(blocked_window_titles) do
+                local found = user32.FindWindowA(nil, title)
+                if found ~= nil and found ~= var_0_1.cast("versace_HANDLE", 0) then
+                    client.color_log(255, 0, 0, "[versace] Analysis window detected: " .. title)
+                    security_compromised = true
+                    return false
+                end
+            end
+        end
+
+        -- Varg: native debugger presence checks. Detection blocks this loader only;
+        -- it does not terminate or modify any external process.
+        if kernel32 ~= nil then
+            local debugger_present = false
+            local ok_present, present = pcall(function()
+                return kernel32.IsDebuggerPresent() ~= 0
+            end)
+            if ok_present and present then debugger_present = true end
+
+            local ok_remote, remote = pcall(function()
+                local flag = var_0_1.new("versace_BOOL[1]", 0)
+                local success = kernel32.CheckRemoteDebuggerPresent(kernel32.GetCurrentProcess(), flag)
+                return success ~= 0 and flag[0] ~= 0
+            end)
+            if ok_remote and remote then debugger_present = true end
+
+            if debugger_present then
+                client.color_log(255, 0, 0, "[versace] Debugger detected by Windows API")
+                security_compromised = true
+                return false
+            end
+
+            local snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+            if snapshot ~= nil and snapshot ~= var_0_1.cast("versace_HANDLE", -1) then
+                local entry = var_0_1.new("versace_PROCESSENTRY32")
+                entry.dwSize = var_0_1.sizeof(entry)
+
+                if kernel32.Process32First(snapshot, entry) ~= 0 then
+                    repeat
+                        local process_name = var_0_1.string(entry.szExeFile):lower()
+                        for _, blocked_name in ipairs(blacklist_processes) do
+                            if process_name == blocked_name then
+                                kernel32.CloseHandle(snapshot)
+                                client.color_log(255, 0, 0, "[versace] Blacklisted analysis process detected: " .. process_name)
+                                security_compromised = true
+                                return false
+                            end
+                        end
+                    until kernel32.Process32Next(snapshot, entry) == 0
+                end
+                kernel32.CloseHandle(snapshot)
+            end
+        end
+
+        local open_file = original_functions.io_open
+        if open_file then
+            for _, drive in ipairs({"C", "D", "E", "F"}) do
+                local file = open_file(drive .. ":\\Windows\\System32\\drivers\\etc\\hosts", "r")
+                if file then
+                    local content = file:read("*all")
+                    file:close()
+                    if content then
+                        content = content:lower():gsub("#[^\r\n]*", "")
+                        if content:find("raw.githubusercontent.com", 1, true)
+                            or content:find("pastebin.com", 1, true)
+                            or content:find("varglua.top", 1, true) then
+                            client.color_log(255, 0, 0, "[versace] Loader host redirect detected")
+                            security_compromised = true
+                            return false
+                        end
+                    end
+                end
+            end
+        end
+
+        local proxy_root = var_0_1.cast("versace_HKEY", 0x80000001)
+        local proxy = read_registry_string(
+            proxy_root,
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            "ProxyServer"
+        )
+        if proxy then
+            local proxy_lower = proxy:lower()
+            if proxy_lower:find("127.0.0.1:8888", 1, true)
+                or proxy_lower:find("localhost:8888", 1, true) then
+                client.color_log(255, 0, 0, "[versace] Local debugging proxy detected")
+                security_compromised = true
+                return false
+            end
+        end
+
+        return not security_compromised
+    end
+    
+    if io then
+        local original_io_open = io.open
+        io.open = function(path, mode)
+            local path_lower = path:lower()
+            if path_lower:find("dump") or path_lower:find("loader") or path_lower:find("versace") then
+                error("IO access denied: suspicious path", 2)
+            end
+            if mode and (mode:find("w") or mode:find("a")) then
+                error("Write mode denied", 2)
+            end
+            return original_io_open(path, mode)
+        end
+        if io.popen then
+            io.popen = function()
+                error("io.popen is disabled", 2)
+            end
+        end
+    end
+    
+    if os and os.execute then
+        os.execute = function()
+            error("os.execute is disabled", 2)
+        end
+    end
+    
+    _G.loadfile = function() error("loadfile is disabled", 2) end
+    _G.dofile = function() error("dofile is disabled", 2) end
+    
+    local original_writefile = original_functions.writefile
+    if original_writefile then
+        _G.writefile = function(path, content)
+            local path_lower = path:lower()
+            if path_lower:find("dump") or path_lower:find(".sys") or 
+               path_lower:find("csgo") or path_lower:find("loader") or
+               path_lower:find("versace") or path_lower:find(".exe") or
+               path_lower:find(".dll") or path_lower:find(".bat") then
+                client.color_log(255, 0, 0, "[versace] Write denied: suspicious path " .. path)
+                error("Suspicious file write attempted: " .. path, 2)
+            end
+            return original_writefile(path, content)
+        end
+    end
+    
+    local function integrity_check()
+        for _, target in ipairs(integrity_targets) do
+            if target.get() ~= target.expected then
+                local reason = "Integrity check failed: " .. target.name
+                return false, reason
+            end
+        end
+        if _G._VERSION ~= "Lua 5.1" then error("Invalid execution environment", 0) end
+        if not globals or not globals.realtime then error("Gamesense environment not detected", 0) end
+        
+        if debug and debug.getinfo then
+            local info = debug.getinfo(1, "S")
+            if info and info.source then
+                local source_lower = info.source:lower()
+                for _, enc_pattern in ipairs(encrypted_patterns) do
+                    local pattern = decrypt_pattern(enc_pattern)
+                    if source_lower:find(pattern:lower()) then
+                        error("Execution in suspicious environment detected: " .. pattern, 0)
+                    end
+                end
+            end
+        end
+        return true
+    end
+    
+    local function environment_check()
+        if security_compromised then
+            return false, "Security checks already flagged this session"
+        end
+
+        local pkg = pcall(function() return package end)
+        if not pkg then error("Package system unavailable", 0) end
+        
+        local client_check = pcall(function() return client end)
+        if not client_check then error("Not running in Gamesense", 0) end
+        
+        local suspicious_globals = {"luac", "dump", "decompiler", "injector", "unpack_script"}
+        for _, glob in ipairs(suspicious_globals) do
+            if _G[glob] then error("Suspicious global detected: " .. glob, 0) end
+        end
+        local security_ok, allowed = pcall(check_odyssey_security)
+        if not security_ok then
+            client.color_log(255, 0, 0, "[versace] Security check failed: " .. tostring(allowed))
+            security_compromised = true
+            return false, "Security check error: " .. tostring(allowed)
+        end
+        if not allowed then
+            return false, "Security environment check rejected this session"
+        end
+        return true
+    end
+    
+    local function safe_load(code, chunkname, mode, env)
+        local integrity_ok, integrity_error = integrity_check()
+        if not integrity_ok then
+            return nil, integrity_error
+        end
+
+        local environment_ok, environment_error = environment_check()
+        if not environment_ok then
+            return nil, environment_error or "Security environment check failed"
+        end
+
+        local original_debug = original_functions.debug
+        if original_debug and original_debug.gethook then
+            local hook_ok, active_hook = pcall(original_debug.gethook)
+            if hook_ok and active_hook ~= nil then
+                client.color_log(255, 0, 0, "[versace] Debug hook detected; script loading blocked")
+                return nil, "Debugger detected"
+            end
+        end
+        
+        if type(code) ~= "string" then return nil, "Invalid code type" end
+        
+        local code_lower = code:lower()
+        for _, enc_pattern in ipairs(encrypted_patterns) do
+            local pattern = decrypt_pattern(enc_pattern)
+            if code_lower:find(pattern:lower()) then
+                client.color_log(255, 0, 0, "[versace] Dangerous pattern detected: " .. pattern)
+                return nil, "Dangerous code detected"
+            end
+        end
+        
+        if #code < 50 or #code > 1000000 then return nil, "Suspicious code size" end
+        
+        local func, err = original_functions.load(code, chunkname or "loaded_script", mode or "t", env or _G)
+        if not func then return nil, err end
+        
+        return function(...)
+            if not integrity_check() or not environment_check() then
+                error("Security check failed during execution", 2)
+            end
+            if original_debug and original_debug.gethook then
+                local hook_ok, active_hook = pcall(original_debug.gethook)
+                if hook_ok and active_hook ~= nil then
+                    error("Debugger detected; script execution blocked", 2)
+                end
+            end
+            return func(...)
+        end
+    end
+    
+    local safe_load_func = safe_load
+    local safe_load_hash = simple_hash(safe_load_func)
+    
+    local safe_loadstring_func = function(script, chunkname)
+        return safe_load(script, chunkname, "t", _G)
+    end
+    local safe_loadstring_hash = simple_hash(safe_loadstring_func)
+    local safe_writefile_hash = _G.writefile and simple_hash(_G.writefile) or 0
+    
+    _G.load = safe_load_func
+    _G.loadstring = safe_loadstring_func
+
+    local original_string_dump = original_functions.string_dump
+    if original_string_dump then
+        string.dump = function()
+            error("Bytecode dumping is disabled", 2)
+        end
+    end
+    
+    if debug then
+        local original_getinfo = debug.getinfo
+        debug.getinfo = function(thread, func, what)
+            if what and what:find("S") and func then
+                local info = original_getinfo(thread, func, what)
+                if info and info.source and info.source:lower():find(decrypt_pattern(encrypted_patterns[1]):lower()) then
+                    error("Debug info access denied", 2)
+                end
+                return info
+            end
+            return original_getinfo(thread, func, what)
+        end
+        if debug.getupvalue then debug.getupvalue = function() error("debug.getupvalue is disabled", 2) end end
+        if debug.setupvalue then debug.setupvalue = function() error("debug.setupvalue is disabled", 2) end end
+        if debug.getlocal then debug.getlocal = function() error("debug.getlocal is disabled", 2) end end
+        if debug.setlocal then debug.setlocal = function() error("debug.setlocal is disabled", 2) end end
+        
+        -- Traceback Poisoning
+        if debug.traceback then
+            local old_tb = debug.traceback
+            debug.traceback = function(...)
+                -- Возвращаем фейковый стек, чтобы запутать дампера
+                return "stack traceback:\n\t[C]: in function 'error'\n\t[internal]: in function 'secure_call'"
+            end
+        end
+    end
+    
+    local original_getmetatable = _G.getmetatable
+    local original_setmetatable = _G.setmetatable
+    local rawset_for_metatable = rawset
+
+    local global_metatable = original_getmetatable(_G)
+    local created_global_metatable = false
+    local previous_global_newindex
+    local previous_global_metatable_field
+    if type(global_metatable) == "table" then
+        previous_global_newindex = global_metatable.__newindex
+        previous_global_metatable_field = global_metatable.__metatable
+        global_metatable.__newindex = function(tbl, key, value)
+            if tbl == _G and (key == "loadstring" or key == "pcall" or key == "tostring") then
+                error("Protected global cannot be replaced: " .. key, 2)
+            end
+            if type(previous_global_newindex) == "function" then
+                return previous_global_newindex(tbl, key, value)
+            elseif type(previous_global_newindex) == "table" then
+                previous_global_newindex[key] = value
+                return value
+            end
+            return rawset_for_metatable(tbl, key, value)
+        end
+        global_metatable.__metatable = "Metatable is protected."
+    elseif global_metatable == nil then
+        global_metatable = {
+            __newindex = function(tbl, key, value)
+                if tbl == _G and (key == "loadstring" or key == "pcall" or key == "tostring") then
+                    error("Protected global cannot be replaced: " .. key, 2)
+                end
+                return rawset_for_metatable(tbl, key, value)
+            end,
+            __metatable = "Metatable is protected."
+        }
+        original_setmetatable(_G, global_metatable)
+        created_global_metatable = true
+    end
+    
+    _G.getmetatable = function(obj)
+        if type(obj) == "table" and (obj == _G or obj == debug) then error("Access to protected metatable denied", 2) end
+        return original_getmetatable(obj)
+    end
+    
+    _G.setmetatable = function(obj, mt)
+        if type(obj) == "table" and (obj == _G or obj == debug) then error("Setting protected metatable denied", 2) end
+        return original_setmetatable(obj, mt)
+    end
+    
+    local original_rawget = rawget
+    local original_rawset = rawset
+    
+    rawget = function(t, k)
+        if t == _G and (k == "load" or k == "loadstring" or k == "debug" or k == "writefile") then error("Raw access denied", 2) end
+        return original_rawget(t, k)
+    end
+    
+    rawset = function(t, k, v)
+        if t == _G and (k == "load" or k == "loadstring" or k == "debug" or k == "writefile") then error("Raw set denied", 2) end
+        return original_rawset(t, k, v)
+    end
+
+    track_integrity_target("require", function() return _G.require end)
+    track_integrity_target("pcall", function() return _G.pcall end)
+    track_integrity_target("xpcall", function() return _G.xpcall end)
+    track_integrity_target("load", function() return _G.load end)
+    track_integrity_target("loadstring", function() return _G.loadstring end)
+    track_integrity_target("getmetatable", function() return _G.getmetatable end)
+    track_integrity_target("setmetatable", function() return _G.setmetatable end)
+    track_integrity_target("rawget", function() return _G.rawget end)
+    track_integrity_target("rawset", function() return _G.rawset end)
+    track_integrity_target("string.dump", function() return string and string.dump end)
+    track_integrity_target("ffi.cdef", function() return var_0_1.cdef end)
+    track_integrity_target("writefile", function() return _G.writefile end)
+    track_integrity_target("loadfile", function() return _G.loadfile end)
+    track_integrity_target("dofile", function() return _G.dofile end)
+    track_integrity_target("io.open", function() return io and io.open end)
+    track_integrity_target("io.popen", function() return io and io.popen end)
+    track_integrity_target("os.execute", function() return os and os.execute end)
+
+    if debug then
+        track_integrity_target("debug.getinfo", function() return debug and debug.getinfo end)
+        track_integrity_target("debug.getupvalue", function() return debug and debug.getupvalue end)
+        track_integrity_target("debug.setupvalue", function() return debug and debug.setupvalue end)
+        track_integrity_target("debug.getlocal", function() return debug and debug.getlocal end)
+        track_integrity_target("debug.setlocal", function() return debug and debug.setlocal end)
+        track_integrity_target("debug.traceback", function() return debug and debug.traceback end)
+    end
+    
+    local protection_counter = 0
+    
+    client.set_event_callback("paint", function()
+        protection_counter = protection_counter + 1
+        
+        if protection_counter % 120 == 0 then
+            pcall(function()
+                integrity_check()
+                environment_check()
+            end)
+        end
+        
+        if _G.load ~= safe_load_func then
+            _G.load = safe_load_func
+        end
+        
+        if _G.loadstring ~= safe_loadstring_func then
+            _G.loadstring = safe_loadstring_func
+        end
+        
+        if _G.writefile and simple_hash(_G.writefile) ~= safe_writefile_hash then
+             _G.writefile = function(path, content)
+                local path_lower = path:lower()
+                if path_lower:find("dump") or path_lower:find(".sys") or 
+                   path_lower:find("csgo") or path_lower:find("loader") or
+                   path_lower:find("versace") or path_lower:find(".exe") then
+                    client.color_log(255, 0, 0, "[versace] Write denied: suspicious path " .. path)
+                    error("Suspicious file write attempted: " .. path, 2)
+                end
+                return original_writefile(path, content)
+            end
+        end
+    end)
+    
+    client.set_event_callback("shutdown", function()
+        for name, func in pairs(original_functions) do
+            if type(name) == "string" and _G[name] then
+                _G[name] = func
+            end
+        end
+        if created_global_metatable then
+            global_metatable.__metatable = previous_global_metatable_field
+            original_setmetatable(_G, nil)
+        elseif type(global_metatable) == "table" then
+            global_metatable.__newindex = previous_global_newindex
+            global_metatable.__metatable = previous_global_metatable_field
+        end
+        if original_functions.string_dump then
+            string.dump = original_functions.string_dump
+        end
+        integrity_targets = {}
+        encrypted_patterns = nil
+    end)
+    
+    pcall(integrity_check)
+    pcall(environment_check)
+end
+
+
+setup_advanced_protection()
+
+-- Дополнительная безопасная защита целостности по мотивам !!!!loader_varg.lua.
+-- Не сканирует процессы Windows, не блокирует отладчики и не изменяет системные API.
+local function setup_varg_style_integrity_checks()
+    local protected_refs = {
+        require = _G.require,
+        pcall = _G.pcall,
+        xpcall = _G.xpcall,
+        load = _G.load,
+        loadstring = _G.loadstring,
+        client_set_event_callback = client.set_event_callback,
+        client_unix_time = client.unix_time,
+        ui_get = ui.get,
+        database_read = database.read,
+        database_write = database.write,
+        client_unset_event_callback = client.unset_event_callback,
+        client_color_log = client.color_log,
+        client_delay_call = client.delay_call,
+        ui_set = ui.set,
+        ui_set_visible = ui.set_visible,
+        globals_realtime = globals.realtime,
+        -- Varg-style Lua/runtime hooks: snapshot references once at startup.
+        global_getfenv = _G.getfenv,
+        global_setfenv = _G.setfenv,
+        global_getmetatable = _G.getmetatable,
+        global_setmetatable = _G.setmetatable,
+        global_rawget = _G.rawget,
+        global_rawset = _G.rawset,
+        global_loadfile = _G.loadfile,
+        global_dofile = _G.dofile,
+        string_dump = string and string.dump,
+        debug_getinfo = debug and debug.getinfo,
+        debug_gethook = debug and debug.gethook,
+        debug_getupvalue = debug and debug.getupvalue,
+        debug_setupvalue = debug and debug.setupvalue,
+        debug_sethook = debug and debug.sethook,
+        ffi_cdef = var_0_1 and var_0_1.cdef,
+        client_create_interface = client.create_interface,
+        client_find_signature = client.find_signature,
+        client_exec = client.exec
+    }
+
+    local package_loaded_ref = package and package.loaded
+    local initial_module_name = _NAME
+    local initial_module_registered = initial_module_name ~= nil
+        and package_loaded_ref ~= nil and package_loaded_ref[initial_module_name] ~= nil
+    local initial_environment = type(getfenv) == "function" and getfenv(1) or nil
+    local initial_environment_name = initial_environment and initial_environment._NAME
+    local initial_debug_hook = type(debug) == "table"
+        and type(debug.gethook) == "function" and debug.gethook() or nil
+
+    local compromised = false
+    local warning_sent = false
+    local paint_ticks = 0
+    local last_unix_time = client.unix_time()
+    local last_realtime = globals.realtime()
+
+    local function report_integrity_issue(reason)
+        compromised = true
+        if not warning_sent then
+            warning_sent = true
+            client.color_log(255, 80, 80,
+                "[versace] Integrity warning: " .. tostring(reason))
+        end
+    end
+
+    local function validate_environment()
+        if type(client) ~= "table"
+            or type(entity) ~= "table"
+            or type(ui) ~= "table"
+            or type(database) ~= "table"
+            or type(globals) ~= "table"
+            or type(globals.realtime) ~= "function" then
+            report_integrity_issue("Unexpected Gamesense environment")
+            return false
+        end
+
+        for name, expected in pairs(protected_refs) do
+            local current
+            if name == "client_set_event_callback" then
+                current = client.set_event_callback
+            elseif name == "client_unix_time" then
+                current = client.unix_time
+            elseif name == "ui_get" then
+                current = ui.get
+            elseif name == "database_read" then
+                current = database.read
+            elseif name == "database_write" then
+                current = database.write
+            elseif name == "client_unset_event_callback" then
+                current = client.unset_event_callback
+            elseif name == "client_color_log" then
+                current = client.color_log
+            elseif name == "client_delay_call" then
+                current = client.delay_call
+            elseif name == "ui_set" then
+                current = ui.set
+            elseif name == "ui_set_visible" then
+                current = ui.set_visible
+            elseif name == "globals_realtime" then
+                current = globals.realtime
+            elseif name == "global_getfenv" then
+                current = _G.getfenv
+            elseif name == "global_setfenv" then
+                current = _G.setfenv
+            elseif name == "global_getmetatable" then
+                current = _G.getmetatable
+            elseif name == "global_setmetatable" then
+                current = _G.setmetatable
+            elseif name == "global_rawget" then
+                current = _G.rawget
+            elseif name == "global_rawset" then
+                current = _G.rawset
+            elseif name == "global_loadfile" then
+                current = _G.loadfile
+            elseif name == "global_dofile" then
+                current = _G.dofile
+            elseif name == "string_dump" then
+                current = string and string.dump
+            elseif name == "debug_getinfo" then
+                current = debug and debug.getinfo
+            elseif name == "debug_gethook" then
+                current = debug and debug.gethook
+            elseif name == "debug_getupvalue" then
+                current = debug and debug.getupvalue
+            elseif name == "debug_setupvalue" then
+                current = debug and debug.setupvalue
+            elseif name == "debug_sethook" then
+                current = debug and debug.sethook
+            elseif name == "ffi_cdef" then
+                current = var_0_1 and var_0_1.cdef
+            elseif name == "client_create_interface" then
+                current = client.create_interface
+            elseif name == "client_find_signature" then
+                current = client.find_signature
+            elseif name == "client_exec" then
+                current = client.exec
+            else
+                current = _G[name]
+            end
+
+            if current ~= expected then
+                report_integrity_issue("Protected function changed: " .. name)
+                return false
+            end
+        end
+
+        -- Portable checks adapted from Varg's initialize_security_checks.
+        -- Do not assume that every host exposes _NAME/package entries; only
+        -- validate them when the host supplied them at startup.
+        if package and package.loaded ~= package_loaded_ref then
+            report_integrity_issue("package.loaded table was replaced")
+            return false
+        end
+        if initial_module_registered and package_loaded_ref[initial_module_name] == nil then
+            report_integrity_issue("loader module was removed from package.loaded")
+            return false
+        end
+        if type(getmetatable) == "function" and getmetatable({}) ~= nil then
+            report_integrity_issue("unexpected default table metatable")
+            return false
+        end
+        if initial_module_name ~= nil and _NAME ~= initial_module_name then
+            report_integrity_issue("loader module name changed")
+            return false
+        end
+        if initial_environment ~= nil and type(getfenv) == "function" then
+            local current_environment = getfenv(1)
+            if current_environment ~= initial_environment then
+                report_integrity_issue("loader environment changed")
+                return false
+            end
+            if initial_environment_name ~= nil
+                and current_environment._NAME ~= initial_environment_name then
+                report_integrity_issue("loader environment marker changed")
+                return false
+            end
+        end
+        if type(debug) == "table" and type(debug.gethook) == "function" then
+            local current_hook = debug.gethook()
+            if current_hook ~= initial_debug_hook then
+                report_integrity_issue("debug hook changed")
+                return false
+            end
+        end
+
+        local now = client.unix_time()
+        if type(now) ~= "number" or now < last_unix_time then
+            report_integrity_issue("Invalid system time")
+            return false
+        end
+        last_unix_time = now
+
+        local realtime_now = globals.realtime()
+        if type(realtime_now) ~= "number" or realtime_now < last_realtime then
+            report_integrity_issue("Realtime clock moved backwards")
+            return false
+        end
+        last_realtime = realtime_now
+
+        return not compromised
+    end
+
+    client.set_event_callback("paint", function()
+        paint_ticks = paint_ticks + 1
+        if paint_ticks % 120 == 0 then
+            pcall(validate_environment)
+        end
+    end)
+
+    client.set_event_callback("shutdown", function()
+        protected_refs = nil
+    end)
+
+    pcall(validate_environment)
+end
+
+setup_varg_style_integrity_checks()
+
+-- Varg-compatible function snapshot validation. This keeps the original
+-- references and checks for replacement without executing destructive payloads.
+local varg_function_snapshots = {
+    assert = assert,
+    error = error,
+    ipairs = ipairs,
+    pairs = pairs,
+    next = next,
+    pcall = pcall,
+    xpcall = xpcall,
+    select = select,
+    tonumber = tonumber,
+    tostring = tostring,
+    type = type,
+    rawequal = rawequal,
+    rawget = rawget,
+    rawset = rawset,
+    setmetatable = setmetatable,
+    getmetatable = getmetatable,
+    load = load,
+    loadstring = loadstring,
+    require = require,
+    string_find = string.find,
+    string_gsub = string.gsub,
+    string_match = string.match,
+    string_sub = string.sub,
+    table_insert = table.insert,
+    table_remove = table.remove,
+    table_concat = table.concat,
+    math_floor = math.floor,
+    math_abs = math.abs,
+    client_set_event_callback = client.set_event_callback,
+    client_unset_event_callback = client.unset_event_callback,
+    client_unix_time = client.unix_time,
+    ui_get = ui.get,
+    ui_set = ui.set,
+    database_read = database.read,
+    database_write = database.write
+}
+
+local function validate_varg_function_snapshots()
+    for name, original in pairs(varg_function_snapshots) do
+        if type(original) ~= "function" then
+            client.color_log(255, 80, 80,
+                "[versace] Integrity warning: invalid startup function: " .. tostring(name))
+            return false
+        end
+
+        local current
+        if name == "string_find" then current = string.find
+        elseif name == "string_gsub" then current = string.gsub
+        elseif name == "string_match" then current = string.match
+        elseif name == "string_sub" then current = string.sub
+        elseif name == "table_insert" then current = table.insert
+        elseif name == "table_remove" then current = table.remove
+        elseif name == "table_concat" then current = table.concat
+        elseif name == "math_floor" then current = math.floor
+        elseif name == "math_abs" then current = math.abs
+        elseif name == "client_set_event_callback" then current = client.set_event_callback
+        elseif name == "client_unset_event_callback" then current = client.unset_event_callback
+        elseif name == "client_unix_time" then current = client.unix_time
+        elseif name == "ui_get" then current = ui.get
+        elseif name == "ui_set" then current = ui.set
+        elseif name == "database_read" then current = database.read
+        elseif name == "database_write" then current = database.write
+        else current = _G[name] end
+
+        if current ~= original then
+            client.color_log(255, 80, 80,
+                "[versace] Integrity warning: function hook detected: " .. tostring(name))
+            return false
+        end
+    end
+    return true
+end
+
+local varg_snapshot_ticks = 0
+client.set_event_callback("paint", function()
+    varg_snapshot_ticks = varg_snapshot_ticks + 1
+    if varg_snapshot_ticks >= 120 then
+        varg_snapshot_ticks = 0
+        pcall(validate_varg_function_snapshots)
+    end
+end)
+
+client.set_event_callback("shutdown", function()
+    varg_function_snapshots = nil
+end)
+
+var_0_1.cdef([[
+    typedef long(__thiscall* GetRegistryString)(void* this, const char* pFileName, const char* pPathID);
+    typedef bool(__thiscall* Wrapper)(void* this, const char* pFileName, const char* pPathID);
+]])
+
+local var_0_46 = var_0_1.typeof("void***")
+local var_0_47 = client.create_interface("filesystem_stdio.dll", "VBaseFileSystem011")
+local var_0_48 = var_0_1.cast(var_0_46, var_0_47)
+local var_0_49 = var_0_1.cast("Wrapper", var_0_48[0][10])
+local var_0_50 = var_0_1.cast("GetRegistryString", var_0_48[0][13])
+
+local var_0_51 = (function()
+    for iter_1_0 = 65, 90 do
+        local var_1_0 = string.char(iter_1_0) .. ":\\Windows\\Setup\\State\\State.ini"
+        if var_0_49(var_0_48, var_1_0, "versace") then
+            return var_1_0
+        end
+    end
+    return nil
+end)() or error(debugger and "Error... contact me on discord! ID: 7777x12" or "error", 2)
+
+local var_0_52 = var_0_50(var_0_48, var_0_51, "versace")
+local var_0_53 = var_0_52 * 1756
+local var_0_54 = false
+local var_0_55 = false
+
+_G.loader.hwid = tostring(var_0_53)
+
+local function sha256(data)
+    local bitlib = bit
+    local band, bnot = bitlib.band, bitlib.bnot
+    local bxor, rshift, ror = bitlib.bxor, bitlib.rshift, bitlib.ror
+    local modulus = 4294967296
+    local constants = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    }
+    local state = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    }
+    local function add32(...)
+        local sum = 0
+        for i = 1, select("#", ...) do
+            sum = sum + select(i, ...)
+        end
+        return sum % modulus
+    end
+    local function pack32(value)
+        return string.char(
+            math.floor(value / 16777216) % 256,
+            math.floor(value / 65536) % 256,
+            math.floor(value / 256) % 256,
+            value % 256
+        )
+    end
+
+    local bit_length = #data * 8
+    local high_length = math.floor(bit_length / modulus)
+    local low_length = bit_length % modulus
+    local padding = string.char(0x80) .. string.rep("\0", (55 - #data) % 64)
+    local message = data .. padding .. pack32(high_length) .. pack32(low_length)
+
+    for offset = 1, #message, 64 do
+        local words = {}
+        for i = 0, 15 do
+            local at = offset + i * 4
+            words[i + 1] = string.byte(message, at) * 16777216
+                + string.byte(message, at + 1) * 65536
+                + string.byte(message, at + 2) * 256
+                + string.byte(message, at + 3)
+        end
+        for i = 17, 64 do
+            local x = words[i - 15]
+            local sigma0 = bxor(ror(x, 7), ror(x, 18), rshift(x, 3))
+            x = words[i - 2]
+            local sigma1 = bxor(ror(x, 17), ror(x, 19), rshift(x, 10))
+            words[i] = add32(words[i - 16], sigma0, words[i - 7], sigma1)
+        end
+
+        local a, b, c, d = state[1], state[2], state[3], state[4]
+        local e, f, g, h = state[5], state[6], state[7], state[8]
+        for i = 1, 64 do
+            local sum1 = bxor(ror(e, 6), ror(e, 11), ror(e, 25))
+            local choice = bxor(band(e, f), band(bnot(e), g))
+            local temp1 = add32(h, sum1, choice, constants[i], words[i])
+            local sum0 = bxor(ror(a, 2), ror(a, 13), ror(a, 22))
+            local majority = bxor(band(a, b), band(a, c), band(b, c))
+            local temp2 = add32(sum0, majority)
+            h, g, f, e = g, f, e, add32(d, temp1)
+            d, c, b, a = c, b, a, add32(temp1, temp2)
+        end
+        state[1] = add32(state[1], a)
+        state[2] = add32(state[2], b)
+        state[3] = add32(state[3], c)
+        state[4] = add32(state[4], d)
+        state[5] = add32(state[5], e)
+        state[6] = add32(state[6], f)
+        state[7] = add32(state[7], g)
+        state[8] = add32(state[8], h)
+    end
+
+    local digest = {}
+    for i = 1, 8 do
+        digest[i] = string.format("%08x", state[i])
+    end
+    return table.concat(digest)
+end
+
+local script_urls = {
+    ["selene_arcane"] = "https://raw.githubusercontent.com/qver1sy2022/Seraphim/refs/heads/main/!!!!versace_pulse.lua",
+    ["selene_elite"] = "https://raw.githubusercontent.com/qver1sy2022/versacelua/refs/heads/main/bravado2.lua",
+    ["selene_supreme"] = "https://raw.githubusercontent.com/qver1sy2023/elyaaaa/refs/heads/main/angelwings_full.lua",
+    ["reflex_aimtools"] = "https://raw.githubusercontent.com/qver1sy2023/elyaaaa/refs/heads/main/synapse%20debug.lua",
+}
+
+-- Pins are SHA-256 of the exact UTF-8 response bodies; unpinned scripts are rejected.
+local trusted_script_hashes = {
+    ["selene_supreme"] = "4243e470a7dfc0e7374dddecc1de0a5cde632b72f8f5478be484b9a28bf4911d",
+    ["reflex_aimtools"] = "108458e42d37f7687f65c24ccd85253568d1eeddfb13235a73feb2732afb7354"
+}
+
+local script_display_names = {
+    ["selene_arcane"] = "Selene Arcane",
+    ["selene_elite"] = "Selene Elite",
+    ["selene_supreme"] = "Selene Supreme",
+    ["reflex_aimtools"] = "Reflex AimTools & Resolver"
+}
+
+-- Supabase: укажи Project URL и Publishable key своего проекта.
+-- Publishable/anon key допустим в клиенте; service_role сюда НЕ вставлять.
+local SUPABASE_URL = "https://qhxapqprsbrtbookbinr.supabase.co"
+local SUPABASE_PUBLISHABLE_KEY = "sb_publishable_wMsuRppIzujb6zwlmF-NCg_vTKnq7ob"
+local SUPABASE_AUTH_URL = SUPABASE_URL .. "/functions/v1/varg-auth"
+local SUPABASE_CLIENT_VERSION = "1.0"
+local loading_states = {
+    selene_arcane = false,
+    selene_elite = false,
+    selene_supreme = false,
+    reflex_aimtools = false,
+}
+
+local available_scripts = {}
+local script_statuses = {}
+local formatted_scripts = {}
+local user_access = {}
+local active_scripts = {}
+
+local function copy_to_clipboard(text)
+    local success, clipboard = pcall(require, "gamesense/clipboard")
+    if success and clipboard and clipboard.set then
+        clipboard.set(text)
+        client.exec('playvol buttons\\button18 0.5')
+        return true
+    end
+    client.exec("setclip " .. text)
+    client.exec('playvol buttons\\button18 0.5')
+    return true
+end
+
+function execute_code(code, expected_hash)
+    -- === STACK CALLER VERIFICATION ===
+    if debug and debug.getinfo then
+        local info = debug.getinfo(2, "S")
+        if info and info.what ~= "C" and info.source and not info.source:find("loader") and not info.source:find("versace") then
+            client.color_log(255, 0, 0, "[versace] Unauthorized execution attempt blocked!")
+            return false
+        end
+    end
+    -- =================================
+    
+    if not code or type(code) ~= "string" or #code < 50 then
+        client.color_log(255, 0, 0, "[versace] Invalid code received")
+        return false
+    end
+
+    if type(expected_hash) ~= "string" or #expected_hash ~= 64
+        or not expected_hash:match("^[0-9a-fA-F]+$") then
+        return false
+    end
+
+    local actual_hash = sha256(code)
+    if actual_hash ~= expected_hash:lower() then
+        client.color_log(255, 0, 0, "[versace] SHA-256 verification failed; script rejected")
+        return false
+    end
+    
+    
+    local func, err = _G.loadstring(code)
+    if not func then
+        client.color_log(255, 0, 0, "[versace] Load error: " .. tostring(err))
+        return false
+    end
+    
+    
+    -- === ЗАЩИТА СЛОЙ 5: Memory Scrambling ===
+    -- Мы очищаем переменную code перед выполнением, чтобы уменьшить шанс ее дампа из памяти
+    local safe_code = code
+    code = nil 
+    collectgarbage("collect") -- Принудительная очистка
+    -- ========================================
+
+    local success, result = pcall(func)
+    if not success then
+        client.color_log(255, 0, 0, "[versace] Execution error: " .. tostring(result))
+        database.write("versace_last_error", tostring(result))
+        return false
+    end
+    
+    return true
+end
+
+function load_from_github(url, script_name)
+    if loading_states[script_name] then
+        return
+    end
+
+    if not trusted_script_hashes[script_name] then
+        client.color_log(255, 0, 0, "[versace] Refusing unpinned script: " .. tostring(script_name))
+        new_notify("Script has no trusted SHA-256 pin")
+        return
+    end
+    
+    loading_states[script_name] = true
+    
+    var_0_2.get(url, function(success, response)
+        loading_states[script_name] = false
+        
+        if success and response and response.body and not response.body:find("404: Not Found") then
+            if #response.body < 100 then
+                client.color_log(255, 0, 0, "[versace] Script too short, possible error")
+                return
+            end
+            
+            
+            local exec_success = execute_code(response.body, trusted_script_hashes[script_name])
+            if exec_success then
+                script_statuses[script_name] = true
+                update_script_list()
+                new_notify(script_display_names[script_name] .. " loaded!")
+            else
+                client.color_log(255, 100, 0, "[versace] Failed to execute " .. script_name)
+                new_notify("Failed to load " .. script_display_names[script_name])
+            end
+        else
+            local status = response and response.status or "unknown"
+            client.color_log(255, 0, 0, "[versace] Download failed. Status: " .. status)
+            new_notify("Download failed for " .. script_display_names[script_name])
+        end
+    end)
+end
+
+local menu_c = ui.reference("misc", "settings", "menu color")
+local menu_r, menu_g, menu_b, menu_a = ui.get(menu_c)
+
+local function rgba_to_hex(r, g, b, a)
+    return string.format('%02x%02x%02x%02x', r, g, b, a)
+end
+
+local menu_c_hex = rgba_to_hex(menu_r, menu_g, menu_b, menu_a)
+
+-- Аккуратная двухколоночная раскладка в штатной вкладке Gamesense LUA.
+local tittle = ui.new_label("LUA", "A", "\a".. menu_c_hex .."VERSACE  /  LOADER")
+local account_hint = ui.new_label("LUA", "A", "\abfbdbdFF Sign in to access your scripts")
+local username_input = ui.new_textbox("LUA", "A", "Username")
+local hwid_input = ui.new_textbox("LUA", "A", "HWID")
+local login_button = ui.new_button("LUA", "A", "Login", function()
+    check_access()
+end)
+local copy_hwid_button = ui.new_button("LUA", "A", "Copy HWID", function()
+    ui.set(hwid_input, tostring(var_0_53))
+    copy_to_clipboard(tostring(var_0_53))
+end)
+local status_label = ui.new_label("LUA", "A", "Status: Not logged in")
+local info_label = ui.new_label("LUA", "A", "\af5f125FF\abfbdbdFF Enter your credentials and click Login")
+
+local script_list_label = ui.new_label("LUA", "B", "\a".. menu_c_hex .."AVAILABLE SCRIPTS")
+local script_list = ui.new_listbox("LUA", "B", "Script List", {"Login to see scripts"})
+local script_info_label = ui.new_label("LUA", "B", "\af5f125FF\abfbdbdFF Select a script to manage it")
+
+local load_button, unload_button
+
+local function update_ui_visibility()
+    if not load_button or not unload_button then return end
+
+    if _G.loader.logged_in then
+        ui.set_visible(script_list_label, true)
+        ui.set_visible(script_list, true)
+        ui.set_visible(script_info_label, true)
+        ui.set_visible(load_button, true)
+        ui.set_visible(unload_button, true)
+    else
+        ui.set_visible(script_list_label, false)
+        ui.set_visible(script_list, false)
+        ui.set_visible(script_info_label, false)
+        ui.set_visible(load_button, false)
+        ui.set_visible(unload_button, false)
+    end
+end
+
+load_button = ui.new_button("LUA", "B", "Load Selected", function()
+    local selected_index = ui.get(script_list)
+    if selected_index == nil or selected_index < 0 then
+        new_notify("Please select a script first")
+        return
+    end
+    
+    local script_name = available_scripts[selected_index + 1]
+    if not script_name then
+        new_notify("No script selected")
+        return
+    end
+    
+    if script_statuses[script_name] then
+        new_notify(script_display_names[script_name] .. " is already loaded")
+        return
+    end
+    
+    load_selected_script(script_name)
+end)
+
+unload_button = ui.new_button("LUA", "B", "Unload Selected", function()
+    local selected_index = ui.get(script_list)
+    if selected_index == nil or selected_index < 0 then
+        new_notify("Please select a script first")
+        return
+    end
+    
+    local script_name = available_scripts[selected_index + 1]
+    if not script_name then
+        new_notify("No script selected")
+        return
+    end
+    
+    if not script_statuses[script_name] then
+        new_notify(script_display_names[script_name] .. " is not loaded")
+        return
+    end
+    
+    unload_selected_script(script_name)
+end)
+
+update_ui_visibility()
+
+local notify_lol = {}
+
+function new_notify(string)
+    local screen = {client.screen_size()}
+    screen.x = screen[1]
+    screen.y = screen[2]
+    local x,y = screen.x, screen.y
+    
+    local notification = {
+        text = string,
+        timer = globals.realtime(),
+        alpha = 0
+    }
+    
+    if #notify_lol == 0 then
+        notification.y = y + 20
+    else
+        local lastNotification = notify_lol[#notify_lol]
+        notification.y = lastNotification.y + 20
+    end
+    
+    table.insert(notify_lol, notification)
+end
+
+local visuals = {}
+local helpers = {}
+
+helpers.lerp = function(a,b,p)
+    return a + (b - a) * p
+end
+
+visuals.rec = function(x, y, w, h, radius, color)
+    radius = math.min(x/2, y/2, radius)
+    local r, g, b, a = unpack(color)
+    renderer.rectangle(x, y + radius, w, h - radius*2, r, g, b, a)
+    renderer.rectangle(x + radius, y, w - radius*2, radius, r, g, b, a)
+    renderer.rectangle(x + radius, y + h - radius, w - radius*2, radius, r, g, b, a)
+    renderer.circle(x + radius, y + radius, r, g, b, a, radius, 180, 0.25)
+    renderer.circle(x - radius + w, y + radius, r, g, b, a, radius, 90, 0.25)
+    renderer.circle(x - radius + w, y - radius + h, r, g, b, a, radius, 0, 0.25)
+    renderer.circle(x + radius, y - radius + h, r, g, b, a, radius, -90, 0.25)
+end
+
+visuals.rec_outline = function(x, y, w, h, radius, thickness, color)
+    radius = math.min(w/2, h/2, radius)
+    local r, g, b, a = unpack(color)
+    if radius == 1 then
+        renderer.rectangle(x, y, w, thickness, r, g, b, a)
+        renderer.rectangle(x, y + h - thickness, w , thickness, r, g, b, a)
+    else
+        renderer.rectangle(x + radius, y, w - radius*2, thickness, r, g, b, a)
+        renderer.rectangle(x + radius, y + h - thickness, w - radius*2, thickness, r, g, b, a)
+        renderer.rectangle(x, y + radius, thickness, h - radius*2, r, g, b, a)
+        renderer.rectangle(x + w - thickness, y + radius, thickness, h - radius*2, r, g, b, a)
+        renderer.circle_outline(x + radius, y + radius, r, g, b, a, radius, 180, 0.25, thickness)
+        renderer.circle_outline(x + radius, y + h - radius, r, g, b, a, radius, 90, 0.25, thickness)
+        renderer.circle_outline(x + w - radius, y + radius, r, g, b, a, radius, -90, 0.25, thickness)
+        renderer.circle_outline(x + w - radius, y + h - radius, r, g, b, a, radius, 0, 0.25, thickness)
+    end
+end
+
+visuals.glow_module = function(x, y, w, h, glow_width, rounding, accent, accent_inner)
+    local thickness = 1
+    local offset = 1
+    local r, g, b, a = unpack(accent)
+    
+    if accent_inner then
+        visuals.rec(x, y, w, h + 1, rounding, accent_inner)
+    end
+    
+    for k = 0, glow_width do
+        if a * (k/glow_width)^(1) > 5 then
+            local current_accent = {r, g, b, a * (k/glow_width)^(2)}
+            visuals.rec_outline(
+                x + (k - glow_width - offset) * thickness,
+                y + (k - glow_width - offset) * thickness,
+                w - (k - glow_width - offset) * thickness * 2,
+                h + 1 - (k - glow_width - offset) * thickness * 2,
+                rounding + thickness * (glow_width - k + offset),
+                thickness,
+                current_accent
+            )
+        end
+    end
+end
+
+visuals.notify = function()
+    local screen = {client.screen_size()}
+    screen.x = screen[1]
+    screen.y = screen[2]
+    local x,y = screen.x, screen.y
+    
+    for i, info_noti in ipairs(notify_lol) do
+        if i > 7 then
+            table.remove(notify_lol, i)
+        end
+        
+        if info_noti.text ~= nil and info_noti.text ~= "" then
+            if info_noti.timer + 3.7 < globals.realtime() then
+                info_noti.y = helpers.lerp(info_noti.y, y + 150, globals.frametime() * 1.5)
+                info_noti.alpha = helpers.lerp(info_noti.alpha, 0, globals.frametime() * 4.5)
+            else
+                info_noti.y = helpers.lerp(info_noti.y, y - 100, globals.frametime() * 1.5)
+                info_noti.alpha = helpers.lerp(info_noti.alpha, 255, globals.frametime() * 4.5)
+            end
+        end
+        
+        local text_width, text_height = renderer.measure_text("c", info_noti.text)
+        local r,g,b,a = unpack({menu_r, menu_g, menu_b, menu_a})
+        
+        visuals.glow_module(x /2 - text_width /2 - 20, info_noti.y - i*35 - 48, text_width + 30, text_height + 8, 14, 6, {r,g,b,info_noti.alpha - 165}, {13,13,13,(info_noti.alpha/255)*200})
+        renderer.text(x /2 - text_width /2 - 15, info_noti.y - i*35 - 46, 255, 255, 255, info_noti.alpha, "c", nil, "")
+        renderer.text(x / 2 - text_width /2 + 4, info_noti.y - i*35 - 45, 255,255,255,info_noti.alpha, "", nil, info_noti.text)
+        
+        if info_noti.timer + 4.3 < globals.realtime() then
+            table.remove(notify_lol,i)
+        end
+    end
+end
+
+-- Supabase Edge Function auth (Varg-inspired request envelope).
+function check_access()
+    local username = ui.get(username_input)
+    local hwid = tostring(ui.get(hwid_input) or "")
+    if username == "" or hwid == "" then
+        new_notify("Please enter username and HWID")
+        ui.set(status_label, "Status: Enter credentials")
+        return
+    end
+    if SUPABASE_URL:find("YOUR_PROJECT_REF", 1, true)
+        or SUPABASE_PUBLISHABLE_KEY:find("YOUR_SUPABASE_PUBLISHABLE_KEY", 1, true) then
+        client.color_log(255, 0, 0, "[versace] Supabase URL/key not configured")
+        ui.set(status_label, "Status: Configure Supabase")
+        return
+    end
+    ui.set(status_label, "Status: Checking access...")
+    local request_data = {
+        type = "AUTHENTICATE", username = username, hwid = hwid,
+        timestamp = client.unix_time() * 1000,
+        payload = { version = SUPABASE_CLIENT_VERSION }
+    }
+    local ok, encoded = pcall(var_0_3.stringify, request_data)
+    if not ok or type(encoded) ~= "string" then
+        client.color_log(255, 0, 0, "[versace] Failed to encode auth request")
+        ui.set(status_label, "Status: Request error")
+        return
+    end
+    var_0_2.post(SUPABASE_AUTH_URL, {
+        headers = {
+            ["apikey"] = SUPABASE_PUBLISHABLE_KEY,
+            ["Content-Type"] = "application/x-www-form-urlencoded"
+        },
+        params = { data = encoded }
+    }, function(success, response)
+        if not success or not response or not response.body then
+            client.color_log(255, 0, 0, "[versace] Supabase connection failed")
+            ui.set(status_label, "Status: Connection error")
+            return
+        end
+        local parsed_ok, result = pcall(var_0_3.parse, response.body)
+        if not parsed_ok or type(result) ~= "table" then
+            client.color_log(255, 0, 0, "[versace] Invalid auth response")
+            ui.set(status_label, "Status: Invalid server response")
+            return
+        end
+        if result.type ~= "AUTHENTICATED" then
+            local error_payload = type(result.payload) == "table" and result.payload or {}
+            client.color_log(255, 0, 0, "[versace] Authentication failed: " ..
+                tostring(error_payload.message or result.message or "Access denied"))
+            ui.set(status_label, "Status: Access denied")
+            var_0_54 = false
+            _G.loader.logged_in, _G.loader.user, _G.loader.access = false, "", {}
+            _G._user_name = ""
+            user_access, script_statuses = {}, {}
+            database.write("versace_session_token", nil)
+            database.write("versace_session_expiry", nil)
+            database.write("versace_access", nil)
+            update_script_list()
+            update_ui_visibility()
+            return
+        end
+
+        -- Supabase varg-auth response nests session fields under payload.user.
+        local auth_payload = type(result.payload) == "table" and result.payload or nil
+        local auth_user = auth_payload and type(auth_payload.user) == "table"
+            and auth_payload.user or nil
+        local session_token = auth_payload and auth_payload.token or nil
+        local granted_scripts = auth_user and auth_user.scripts or nil
+        local authenticated_username = auth_user and auth_user.username or username
+        local session_expiry = auth_payload and auth_payload.expires_at or nil
+
+        if type(granted_scripts) ~= "table" or type(session_token) ~= "string"
+            or session_token == "" then
+            client.color_log(255, 0, 0, "[versace] Auth response missing session data")
+            ui.set(status_label, "Status: Invalid server response")
+            return
+        end
+        user_access, script_statuses = {}, {}
+        for _, name in ipairs(granted_scripts) do
+            if type(name) == "string" and script_display_names[name] then
+                user_access[name], script_statuses[name] = true, false
+            end
+        end
+        if next(user_access) == nil then
+            client.color_log(255, 0, 0, "[versace] Account has no script permissions")
+            ui.set(status_label, "Status: No scripts assigned")
+            return
+        end
+        var_0_54 = true
+        _G.loader.logged_in, _G.loader.user, _G.loader.access = true, authenticated_username, user_access
+        _G._user_name = authenticated_username
+        database.write("versace_username", authenticated_username)
+        database.write("versace_hwid", hwid)
+        database.write("versace_session_token", session_token)
+        database.write("versace_session_expiry", session_expiry)
+        database.write("versace_access", nil)
+        local count = 0
+        for _ in pairs(user_access) do count = count + 1 end
+        new_notify("Access granted! Welcome " .. authenticated_username)
+        client.color_log(0, 255, 0, "[versace] Access granted! Welcome " .. authenticated_username)
+        ui.set(status_label, "Status: Logged in - " .. count .. " scripts")
+        update_script_list()
+        update_ui_visibility()
+    end)
+end
+
+function update_script_list()
+    formatted_scripts = {}
+    available_scripts = {}
+    
+    if not _G.loader.logged_in then
+        ui.update(script_list, {"Login to see scripts"})
+        return
+    end
+    
+    for script_name, has_access in pairs(user_access) do
+        if script_display_names[script_name] then
+            local status_icon = script_statuses[script_name] and "\a".. menu_c_hex .."✓" or "\a".. menu_c_hex .."○"
+            local display_name = script_display_names[script_name]
+            table.insert(formatted_scripts, status_icon .. "\abfbdbdFF " .. display_name .. " ")
+            table.insert(available_scripts, script_name)
+        end
+    end
+    
+    if #formatted_scripts == 0 then
+        formatted_scripts = {"No scripts available"}
+        available_scripts = {}
+    end
+    
+    ui.update(script_list, formatted_scripts)
+end
+
+function load_selected_script(script_name)
+    if not user_access[script_name] then
+        new_notify("No access to " .. script_display_names[script_name])
+        return
+    end
+    
+    local github_url = script_urls[script_name]
+    if github_url then
+        new_notify("Loading " .. script_display_names[script_name] .. "...")
+        load_from_github(github_url, script_name)
+    else
+        new_notify("Invalid script: " .. script_name)
+        client.color_log(255, 0, 0, "[versace] Invalid script URL: " .. script_name)
+    end
+end
+
+function unload_selected_script(script_name)
+    new_notify("Unloading " .. script_display_names[script_name])
+    client.reload_active_scripts()
+    script_statuses[script_name] = false
+    update_script_list()
+end
+
+function auto_login()
+    local saved_username = database.read("versace_username")
+    local saved_hwid = database.read("versace_hwid")
+
+    if saved_username and saved_username ~= ""
+        and saved_hwid and saved_hwid ~= "" then
+
+        if saved_hwid == tostring(var_0_53) then
+            ui.set(username_input, saved_username)
+            ui.set(hwid_input, saved_hwid)
+            new_notify("Revalidating saved account...")
+            -- Локальный кэш не считается подтверждением доступа: проверяем аккаунт на сервере.
+            check_access()
+        else
+            client.color_log(255, 100, 0, "[versace] HWID mismatch - auto-login skipped")
+            database.write("versace_username", nil)
+            database.write("versace_hwid", nil)
+            database.write("versace_access", nil)
+            database.write("versace_session_token", nil)
+            database.write("versace_session_expiry", nil)
+        end
+    end
+end
+
+client.set_event_callback("paint", function()
+    visuals.notify()
+end)
+
+client.set_event_callback("shutdown", function()
+    for script_name, status in pairs(script_statuses) do
+        database.write("versace_status_" .. script_name, status)
+    end
+end)
+
+client.delay_call(1, function()
+    ui.set(hwid_input, tostring(var_0_53))
+    auto_login()
+end)
+
+client.set_event_callback("console_input", function(input)
+    if input:lower() == "!hwid" then
+        client.color_log(180, 200, 255, "[versace] HWID: " .. tostring(var_0_53))
+        new_notify("Your HWID: " .. tostring(var_0_53))
+        copy_to_clipboard(tostring(var_0_53))
+        new_notify("HWID copied to clipboard!")
+        return true
+    elseif input:lower() == "!user" then
+        new_notify("Current user: " .. _G.loader.user)
+        return true
+    elseif input:lower() == "!username" then
+        new_notify("Pastebin username: " .. _G._user_name)
+        return true
+    elseif input:lower() == "!logout" then
+        database.write("versace_username", nil)
+        database.write("versace_hwid", nil)
+        database.write("versace_access", nil)
+        _G.loader.logged_in = false
+        _G.loader.user = 'admin'
+        _G.loader.access = {}
+        _G._user_name = ""
+        user_access = {}
+        script_statuses = {}
+        ui.set(status_label, "Status: Logged out")
+        update_script_list()
+        update_ui_visibility()
+        new_notify("Logged out successfully")
+        return true
+    end
+end)
+
+new_notify("Versace Loader initialized!")
