@@ -45,7 +45,1486 @@ local function truthy_iterator(iterator, state, control)
   end, state, control
 end
 -- F2: selene_main
-local outlaw_intelligence_controls = nil
+local selene_intelligence_controls = nil
+local reflex_antipredict_active = false
+_G.__selene_aa_antibrute_runtime = {
+  active_until = 0,
+  yaw_add = 0,
+  yaw_frac = 0,
+  jitter_frac = 0,
+  mode = "Random",
+  base_yaw = 0,
+  base_jitter = 0,
+  cooldown = {},
+  hit_guard = {},
+  pending_impacts = {},
+  meta_stage = {}
+}
+
+_G.__selene_adjust_aa_antibruteforce = function(yaw_offset, jitter_offset)
+  local runtime = _G.__selene_aa_antibrute_runtime
+  local enabled = runtime.is_enabled ~= nil and runtime.is_enabled()
+  local now = globals.realtime()
+
+  if enabled and runtime.active_until > now then
+    if runtime.mode == "Random" then
+      local yaw = tonumber(yaw_offset) or 0
+      local jitter = tonumber(jitter_offset) or 0
+      if yaw ~= 0 then
+        yaw_offset = math.max(-180, math.min(180, yaw * (1 + runtime.yaw_frac)))
+      end
+      if jitter ~= 0 then
+        jitter_offset = math.max(-180, math.min(180, jitter * (1 + runtime.jitter_frac)))
+      end
+    end
+    yaw_offset = math.max(-180, math.min(180, (tonumber(yaw_offset) or 0) + runtime.yaw_add))
+  else
+    if not enabled or runtime.active_until <= now then
+      runtime.active_until = 0
+      runtime.yaw_add = 0
+      runtime.yaw_frac = 0
+      runtime.jitter_frac = 0
+    end
+    runtime.base_yaw = tonumber(yaw_offset) or 0
+    runtime.base_jitter = tonumber(jitter_offset) or 0
+  end
+
+  return yaw_offset, jitter_offset
+end
+
+local function setup_aa_antibruteforce(controls, main_group, aa_group)
+  local aa_antibrute_runtime = _G.__selene_aa_antibrute_runtime
+  aa_antibrute_runtime.controls = controls
+
+  local function reset()
+    aa_antibrute_runtime.active_until = 0
+    aa_antibrute_runtime.yaw_add = 0
+    aa_antibrute_runtime.yaw_frac = 0
+    aa_antibrute_runtime.jitter_frac = 0
+    aa_antibrute_runtime.mode = "Random"
+    aa_antibrute_runtime.cooldown = {}
+    aa_antibrute_runtime.hit_guard = {}
+    aa_antibrute_runtime.pending_impacts = {}
+    aa_antibrute_runtime.meta_stage = {}
+  end
+
+  local function is_enabled()
+    return controls.enabled.get(controls.enabled)
+      and main_group.get(main_group) == "Anti Aim"
+      and aa_group.get(aa_group) == "Others"
+  end
+  aa_antibrute_runtime.is_enabled = is_enabled
+
+  local function source_enabled(source)
+    local selected = controls.sources.get(controls.sources)
+    if type(selected) ~= "table" then
+      return false
+    end
+    for i = 1, #selected do
+      if selected[i] == source then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function update_visibility()
+    local in_others = main_group.get(main_group) == "Anti Aim"
+      and aa_group.get(aa_group) == "Others"
+    local enabled = in_others and controls.enabled.get(controls.enabled)
+    controls.enabled.visibility(controls.enabled, in_others)
+    controls.mode.visibility(controls.mode, enabled)
+    controls.sources.visibility(controls.sources, enabled)
+    if not enabled then
+      reset()
+    end
+  end
+
+  local function clamp(value, lower, upper)
+    return math.max(lower, math.min(upper, value))
+  end
+
+  local function react(source, attacker)
+    if not is_enabled() or not source_enabled(source) then
+      return
+    end
+
+    local now = globals.realtime()
+    if (aa_antibrute_runtime.cooldown[attacker] or 0) > now then
+      return
+    end
+    aa_antibrute_runtime.cooldown[attacker] = now + 0.65
+    aa_antibrute_runtime.active_until = now + 4
+
+    local mode = controls.mode.get(controls.mode)
+    local yaw_bias = tonumber(aa_antibrute_runtime.base_yaw) or 0
+    local jitter_bias = tonumber(aa_antibrute_runtime.base_jitter) or 0
+    aa_antibrute_runtime.mode = mode
+    aa_antibrute_runtime.yaw_frac = 0
+    aa_antibrute_runtime.jitter_frac = 0
+
+    if mode == "Increase" then
+      aa_antibrute_runtime.yaw_add = clamp(yaw_bias + client.random_int(4, 10), -45, 45)
+    elseif mode == "Decrease" then
+      aa_antibrute_runtime.yaw_add = clamp(yaw_bias + client.random_int(-10, -4), -45, 45)
+    elseif mode == "Meta" then
+      local stage = (aa_antibrute_runtime.meta_stage[attacker] or 0) % 10 + 1
+      aa_antibrute_runtime.meta_stage[attacker] = stage
+      local direction = yaw_bias > 0 and -1 or 1
+      aa_antibrute_runtime.yaw_add = clamp(yaw_bias + stage * 2 * direction, -50, 50)
+    else
+      aa_antibrute_runtime.mode = "Random"
+      aa_antibrute_runtime.yaw_frac = clamp(yaw_bias / 100, -0.36, 0.36)
+      aa_antibrute_runtime.jitter_frac = clamp(
+        jitter_bias + math.random() * 0.08 - 0.04,
+        -0.28,
+        0.28
+      )
+      aa_antibrute_runtime.yaw_add = clamp(yaw_bias * 0.35, -14, 14)
+    end
+  end
+
+  local function point_segment_distance_squared(px, py, pz, ax, ay, az, bx, by, bz)
+    local dx, dy, dz = bx - ax, by - ay, bz - az
+    local length_squared = dx * dx + dy * dy + dz * dz
+    local t = 0
+    if length_squared > 0 then
+      t = clamp(((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / length_squared, 0, 1)
+    end
+    local ox, oy, oz = px - (ax + dx * t), py - (ay + dy * t), pz - (az + dz * t)
+    return ox * ox + oy * oy + oz * oz
+  end
+
+  local function on_bullet_impact(event)
+    if not is_enabled() or not source_enabled("Near miss") then
+      return
+    end
+    local local_player = entity.get_local_player()
+    local attacker = client.userid_to_entindex(event.userid)
+    if local_player == nil or attacker == nil or attacker == local_player
+      or not entity.is_alive(local_player) or not entity.is_enemy(attacker)
+      or not entity.is_alive(attacker) or entity.is_dormant(attacker) then
+      return
+    end
+
+    local impact_x, impact_y, impact_z = tonumber(event.x), tonumber(event.y), tonumber(event.z)
+    local start_x, start_y, start_z = entity.get_origin(attacker)
+    if impact_x == nil or impact_y == nil or impact_z == nil
+      or start_x == nil or start_y == nil or start_z == nil then
+      return
+    end
+    start_z = start_z + (entity.get_prop(attacker, "m_vecViewOffset[2]") or 64)
+
+    local points = {}
+    local head_x, head_y, head_z = entity.hitbox_position(local_player, 0)
+    if type(head_x) == "number" and type(head_y) == "number" and type(head_z) == "number" then
+      points[#points + 1] = { head_x, head_y, head_z }
+    end
+    local body_x, body_y, body_z = entity.hitbox_position(local_player, 3)
+    if type(body_x) == "number" and type(body_y) == "number" and type(body_z) == "number" then
+      points[#points + 1] = { body_x, body_y, body_z }
+    end
+    local origin_x, origin_y, origin_z = entity.get_origin(local_player)
+    if origin_x ~= nil and origin_y ~= nil and origin_z ~= nil then
+      local view_height = entity.get_prop(local_player, "m_vecViewOffset[2]") or 64
+      points[#points + 1] = { origin_x, origin_y, origin_z + view_height }
+      points[#points + 1] = { origin_x, origin_y, origin_z + 40 }
+    end
+    if #points == 0 then
+      return
+    end
+
+    local near_miss = false
+    for i = 1, #points do
+      local point = points[i]
+      if point_segment_distance_squared(
+        point[1], point[2], point[3],
+        start_x, start_y, start_z,
+        impact_x, impact_y, impact_z
+      ) <= 24 * 24 then
+        near_miss = true
+        break
+      end
+    end
+    if not near_miss then
+      return
+    end
+
+    local pending = {}
+    aa_antibrute_runtime.pending_impacts[attacker] = pending
+    client.delay_call(0.08, function()
+      if aa_antibrute_runtime.pending_impacts[attacker] ~= pending then
+        return
+      end
+      aa_antibrute_runtime.pending_impacts[attacker] = nil
+      if (aa_antibrute_runtime.hit_guard[attacker] or 0) > globals.realtime() then
+        return
+      end
+      react("Near miss", attacker)
+    end)
+  end
+
+  local function on_player_hurt(event)
+    local local_player = entity.get_local_player()
+    local victim = client.userid_to_entindex(event.userid)
+    local attacker = client.userid_to_entindex(event.attacker)
+    if local_player == nil or victim ~= local_player or attacker == nil
+      or attacker == local_player or not entity.is_enemy(attacker) then
+      return
+    end
+
+    aa_antibrute_runtime.hit_guard[attacker] = globals.realtime() + 0.2
+    aa_antibrute_runtime.pending_impacts[attacker] = nil
+    if tonumber(event.hitgroup) == 1 or (tonumber(event.health) or 0) <= 0
+      or (tonumber(event.dmg_health) or 0) < 10 then
+      return
+    end
+    react("Body hit", attacker)
+  end
+
+  local function on_player_death(event)
+    local player = client.userid_to_entindex(event.userid)
+    if player == entity.get_local_player() then
+      reset()
+    elseif player ~= nil then
+      aa_antibrute_runtime.cooldown[player] = nil
+      aa_antibrute_runtime.hit_guard[player] = nil
+      aa_antibrute_runtime.pending_impacts[player] = nil
+      aa_antibrute_runtime.meta_stage[player] = nil
+    end
+  end
+
+  local selected = controls.sources.get(controls.sources)
+  if type(selected) ~= "table" or #selected == 0 then
+    controls.sources.set(controls.sources, { "Near miss", "Body hit" })
+  end
+  main_group.callback(main_group, update_visibility, true)
+  aa_group.callback(aa_group, update_visibility, true)
+  controls.enabled.callback(controls.enabled, update_visibility, true)
+  client.set_event_callback("bullet_impact", on_bullet_impact)
+  client.set_event_callback("player_hurt", on_player_hurt)
+  client.set_event_callback("player_death", on_player_death)
+  client.set_event_callback("round_start", reset)
+  client.set_event_callback("shutdown", reset)
+end
+
+local function selene_antipredict_module(feature_control)
+  local MAX_HISTORY = 64
+  local abs, atan2, cos, floor, max, min, sin, sqrt = math.abs, math.atan2, math.cos, math.floor, math.max, math.min, math.sin, math.sqrt
+  local HISTORY_WINDOW = 32
+  local CONFIDENCE_THRESHOLD = 75
+  local PATTERN_ENABLED, ADAPTIVE_ENABLED, MOVEMENT_ENABLED = true, true, true
+  local states, seen_players = {}, {}
+  local last_map_name
+
+  local function is_finite_number(value)
+    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+  end
+
+  local function clamp(value, lower, upper)
+    return max(lower, min(upper, value))
+  end
+
+  local function normalize_yaw(yaw)
+    if not is_finite_number(yaw) then
+      return nil
+    end
+    return (yaw + 180) % 360 - 180
+  end
+
+  local function get_sample(state, age)
+    if age < 0 or age >= state.count then
+      return nil
+    end
+    local index = (state.next_sample - 2 - age) % MAX_HISTORY + 1
+    return state.history[index]
+  end
+
+  local function clear_history(state)
+    state.next_sample = 1
+    state.count = 0
+    state.pattern = "insufficient"
+    state.pattern_source = nil
+    state.pattern_period = 0
+    state.pattern_score = 0
+    state.periodicity_score = 0
+    state.period_seconds = 0
+    state.movement_score = 0
+    state.movement_state = "unknown"
+    state.adaptive_count = 0
+    state.adaptive_mean = 0
+    state.adaptive_m2 = 0
+    state.adaptive_predictability = 0
+    state.adaptive_score = 0
+    state.confidence = 0
+    state.predicted_delta = nil
+    state.status = "insufficient"
+  end
+
+  local function new_player_state(steam_id)
+    local history = {}
+    for index = 1, MAX_HISTORY do
+      history[index] = {}
+    end
+    local state = {
+      steam_id = steam_id,
+      history = history,
+      next_sample = 1,
+      count = 0,
+      adaptive_count = 0,
+      adaptive_mean = 0,
+      adaptive_m2 = 0,
+      adaptive_predictability = 0,
+      last_seen = 0,
+      last_sample_time = nil,
+      override_saved = false,
+      override_active = false,
+      last_force_value = nil
+    }
+    clear_history(state)
+    return state
+  end
+
+  local function restore_player_override(player_index, state)
+    if not state.override_saved then
+      return
+    end
+    if entity.get_steam64(player_index) == state.steam_id then
+      plist.set(player_index, "Force body yaw value", state.original_yaw_value)
+      plist.set(player_index, "Force body yaw", state.original_yaw_enabled)
+    end
+    state.override_saved = false
+    state.override_active = false
+    state.last_force_value = nil
+  end
+
+  local function remove_player_state(player_index, restore_override)
+    local state = states[player_index]
+    if state == nil then
+      return
+    end
+    if restore_override then
+      restore_player_override(player_index, state)
+    end
+    states[player_index] = nil
+  end
+
+  local function clear_all_states(restore_overrides)
+    for player_index in pairs(states) do
+      remove_player_state(player_index, restore_overrides)
+    end
+    for player_index in pairs(seen_players) do
+      seen_players[player_index] = nil
+    end
+  end
+
+  local function get_or_create_state(player_index, steam_id)
+    local state = states[player_index]
+    if state ~= nil and state.steam_id ~= steam_id then
+      -- Entity indices can be reused after a disconnect; never restore one player's data onto another.
+      states[player_index] = nil
+      state = nil
+    end
+    if state == nil then
+      state = new_player_state(steam_id)
+      states[player_index] = state
+    end
+    return state
+  end
+
+  local function collect_sample(player_index, state, now)
+    local simulation_time = entity.get_prop(player_index, "m_flSimulationTime")
+    local _, eye_yaw = entity.get_prop(player_index, "m_angEyeAngles")
+    local lower_body_yaw = entity.get_prop(player_index, "m_flLowerBodyYawTarget")
+    local velocity_x, velocity_y = entity.get_prop(player_index, "m_vecVelocity")
+    if not is_finite_number(simulation_time) or not is_finite_number(eye_yaw) then
+      return false
+    end
+
+    eye_yaw = normalize_yaw(eye_yaw)
+    lower_body_yaw = normalize_yaw(lower_body_yaw)
+    local speed
+    local movement_yaw
+    if is_finite_number(velocity_x) and is_finite_number(velocity_y) then
+      speed = sqrt(velocity_x * velocity_x + velocity_y * velocity_y)
+      if speed >= 5 then
+        movement_yaw = normalize_yaw(atan2(velocity_y, velocity_x) * (180 / math.pi))
+      end
+    end
+
+    local previous = get_sample(state, 0)
+    if state.last_sample_time ~= nil and now - state.last_sample_time > 2.5 and state.count > 0 then
+      clear_history(state)
+      restore_player_override(player_index, state)
+      previous = nil
+    end
+    if previous ~= nil then
+      if simulation_time < previous.simulation_time then
+        clear_history(state)
+        restore_player_override(player_index, state)
+        previous = nil
+      elseif simulation_time == previous.simulation_time then
+        return false
+      elseif simulation_time - previous.simulation_time > max(globals.tickinterval() * 8, 0.25) then
+        clear_history(state)
+        restore_player_override(player_index, state)
+        previous = nil
+      end
+    end
+
+    local sample = state.history[state.next_sample]
+    sample.simulation_time = simulation_time
+    sample.tick = globals.tickcount()
+    sample.eye_yaw = eye_yaw
+    sample.lower_body_yaw = lower_body_yaw
+    sample.speed = speed
+    sample.movement_yaw = movement_yaw
+    sample.eye_delta = previous and normalize_yaw(eye_yaw - previous.eye_yaw) or 0
+    sample.lby_delta = previous ~= nil
+      and lower_body_yaw ~= nil
+      and previous.lower_body_yaw ~= nil
+      and normalize_yaw(lower_body_yaw - previous.lower_body_yaw) or 0
+    state.next_sample = state.next_sample % MAX_HISTORY + 1
+    state.count = min(state.count + 1, MAX_HISTORY)
+    state.last_sample_time = now
+    return true
+  end
+
+  local function delta_symbol(delta)
+    if not is_finite_number(delta) or abs(delta) < 5 then
+      return 0
+    end
+    local magnitude = abs(delta) >= 120 and 3 or abs(delta) >= 40 and 2 or 1
+    return (delta > 0 and 1 or -1) * magnitude
+  end
+
+  local function compare_repeating_pattern(state, window, field)
+    local count = min(state.count, window)
+    local max_period = min(4, floor((count - 1) / 2))
+    local best_period, best_score, best_prediction = 0, 0, nil
+    for period = 2, max_period do
+      local matches, informative = 0, 0
+      for age = 0, period - 1 do
+        local current = get_sample(state, age)
+        local previous = get_sample(state, age + period)
+        if current ~= nil and previous ~= nil
+          and (field ~= "lby_delta" or (current.lower_body_yaw ~= nil and previous.lower_body_yaw ~= nil)) then
+          local current_symbol = delta_symbol(current[field])
+          local previous_symbol = delta_symbol(previous[field])
+          if current_symbol ~= 0 or previous_symbol ~= 0 then
+            informative = informative + 1
+            if current_symbol == previous_symbol then
+              matches = matches + 1
+            end
+          end
+        end
+      end
+      if informative >= 2 then
+        local score = matches / informative
+        if score > best_score then
+          best_period = period
+          best_score = score
+          local prediction = get_sample(state, period - 1)
+          best_prediction = prediction ~= nil and prediction[field] or nil
+        end
+      end
+    end
+    if best_score < 0.72 then
+      return 0, best_score, nil
+    end
+    return best_period, best_score, best_prediction
+  end
+
+  local function calculate_periodicity(state, window, field)
+    local count = min(state.count, window)
+    local previous_event_time
+    local interval_count, interval_sum, interval_squared_sum = 0, 0, 0
+    for age = count - 1, 0, -1 do
+      local sample = get_sample(state, age)
+      if sample ~= nil and (field ~= "lby_delta" or sample.lower_body_yaw ~= nil)
+        and abs(sample[field] or 0) >= 8 then
+        if previous_event_time ~= nil then
+          local interval = sample.simulation_time - previous_event_time
+          if interval > 0 then
+            interval_count = interval_count + 1
+            interval_sum = interval_sum + interval
+            interval_squared_sum = interval_squared_sum + interval * interval
+          end
+        end
+        previous_event_time = sample.simulation_time
+      end
+    end
+    if interval_count < 2 then
+      return 0, 0
+    end
+    local mean = interval_sum / interval_count
+    if mean <= 0 then
+      return 0, 0
+    end
+    local variance = max(0, interval_squared_sum / interval_count - mean * mean)
+    local coefficient = sqrt(variance) / mean
+    return clamp(1 - coefficient / 0.75, 0, 1), mean
+  end
+
+  local function analyze_pattern(state, window, enabled)
+    if not enabled then
+      state.pattern = "disabled"
+      state.pattern_source = nil
+      state.pattern_period = 0
+      state.pattern_score = 0
+      state.predicted_delta = nil
+      state.periodicity_score = 0
+      state.period_seconds = 0
+      return
+    end
+    local eye_period, eye_score, eye_prediction = compare_repeating_pattern(state, window, "eye_delta")
+    local lby_period, lby_score, lby_prediction = compare_repeating_pattern(state, window, "lby_delta")
+    if lby_period > 0 and lby_score > eye_score then
+      state.pattern_source = "LBY"
+      state.pattern_period = lby_period
+      state.pattern_score = lby_score
+      state.predicted_delta = lby_prediction
+    elseif eye_period > 0 then
+      state.pattern_source = "Eye"
+      state.pattern_period = eye_period
+      state.pattern_score = eye_score
+      state.predicted_delta = eye_prediction
+    else
+      state.pattern_source = nil
+      state.pattern_period = 0
+      state.pattern_score = max(eye_score, lby_score)
+      state.predicted_delta = nil
+    end
+
+    if state.pattern_period > 0 then
+      state.pattern = string.lower(state.pattern_source) .. "-cycle-" .. state.pattern_period
+    else
+      state.pattern = "no-repeat"
+    end
+    local eye_periodicity, eye_seconds = calculate_periodicity(state, window, "eye_delta")
+    local lby_periodicity, lby_seconds = calculate_periodicity(state, window, "lby_delta")
+    if lby_periodicity > eye_periodicity then
+      state.periodicity_score = lby_periodicity
+      state.period_seconds = lby_seconds
+    else
+      state.periodicity_score = eye_periodicity
+      state.period_seconds = eye_seconds
+    end
+  end
+
+  local function analyze_movement(state, window, enabled)
+    if not enabled then
+      state.movement_score = 0
+      state.movement_state = "disabled"
+      return
+    end
+    local count = min(state.count, window)
+    local previous_category, previous_direction
+    local category_pairs, category_changes, reversals = 0, 0, 0
+    local relation_count, relation_sin, relation_cos = 0, 0, 0
+    local latest = get_sample(state, 0)
+    for age = count - 1, 0, -1 do
+      local sample = get_sample(state, age)
+      if sample ~= nil and is_finite_number(sample.speed) then
+        local category = sample.speed >= 8 and 1 or 0
+        if previous_category ~= nil then
+          category_pairs = category_pairs + 1
+          if category ~= previous_category then
+            category_changes = category_changes + 1
+          end
+        end
+        previous_category = category
+        if sample.speed >= 15 and sample.movement_yaw ~= nil then
+          local relation = normalize_yaw(sample.eye_yaw - sample.movement_yaw)
+          local radians = relation * (math.pi / 180)
+          relation_sin = relation_sin + sin(radians)
+          relation_cos = relation_cos + cos(radians)
+          relation_count = relation_count + 1
+          if previous_direction ~= nil and abs(normalize_yaw(sample.movement_yaw - previous_direction)) >= 135 then
+            reversals = reversals + 1
+          end
+          previous_direction = sample.movement_yaw
+        else
+          previous_direction = nil
+        end
+      end
+    end
+    local stability = category_pairs > 0 and 1 - category_changes / category_pairs or 0
+    local coupling = relation_count >= 3
+      and sqrt(relation_sin * relation_sin + relation_cos * relation_cos) / relation_count or 0
+    state.movement_score = clamp(relation_count >= 3
+      and stability * 0.55 + coupling * 0.45 or stability * 0.6, 0, 1)
+    state.movement_reversals = reversals
+    if latest == nil or latest.speed == nil then
+      state.movement_state = "unknown"
+    elseif latest.speed < 5 then
+      state.movement_state = "stopped"
+    elseif reversals > 0 then
+      state.movement_state = "direction-change"
+    else
+      state.movement_state = "moving"
+    end
+  end
+
+  local function update_adaptive_model(state, enabled)
+    if not enabled then
+      state.adaptive_score = 0
+      return
+    end
+    local latest = get_sample(state, 0)
+    if latest == nil then
+      return
+    end
+    local observation = abs(latest.eye_delta or 0)
+    state.adaptive_count = state.adaptive_count + 1
+    local delta = observation - state.adaptive_mean
+    state.adaptive_mean = state.adaptive_mean + delta / state.adaptive_count
+    state.adaptive_m2 = state.adaptive_m2 + delta * (observation - state.adaptive_mean)
+    local pattern_observation = clamp(state.pattern_score * 0.65 + state.periodicity_score * 0.35, 0, 1)
+    if state.adaptive_count == 1 then
+      state.adaptive_predictability = pattern_observation
+    else
+      state.adaptive_predictability = state.adaptive_predictability * 0.82 + pattern_observation * 0.18
+    end
+    local variance_score = state.adaptive_count >= 4
+      and clamp(1 - sqrt(max(0, state.adaptive_m2 / (state.adaptive_count - 1))) / 45, 0, 1) or 0
+    state.adaptive_score = clamp(state.adaptive_predictability * 0.7 + variance_score * 0.3, 0, 1)
+  end
+
+  local function calculate_confidence(state, pattern_enabled, adaptive_enabled, movement_enabled, window)
+    local score, weight = 0, 0
+    if pattern_enabled then
+      score = score + state.pattern_score * 0.45 + state.periodicity_score * 0.25
+      weight = weight + 0.70
+    end
+    if adaptive_enabled then
+      score = score + state.adaptive_score * 0.15
+      weight = weight + 0.15
+    end
+    if movement_enabled then
+      score = score + state.movement_score * 0.15
+      weight = weight + 0.15
+    end
+    local evidence = clamp((state.count - 1) / max(1, min(8, window - 1)), 0, 1)
+    state.confidence = weight > 0 and floor(clamp(score / weight * evidence, 0, 1) * 100 + 0.5) or 0
+  end
+
+  local function analyze_state(state, pattern_enabled, adaptive_enabled, movement_enabled, window, update_adaptive)
+    analyze_pattern(state, window, pattern_enabled)
+    analyze_movement(state, window, movement_enabled)
+    if update_adaptive then
+      update_adaptive_model(state, adaptive_enabled)
+    end
+    calculate_confidence(state, pattern_enabled, adaptive_enabled, movement_enabled, window)
+  end
+
+  local function calculate_force_yaw(state)
+    local current = get_sample(state, 0)
+    if current == nil or current.lower_body_yaw == nil or not is_finite_number(state.predicted_delta) then
+      return nil
+    end
+    local predicted_eye_yaw = current.eye_yaw
+    local predicted_lby = current.lower_body_yaw
+    if state.pattern_source == "LBY" then
+      predicted_lby = normalize_yaw(predicted_lby + state.predicted_delta)
+    else
+      predicted_eye_yaw = normalize_yaw(predicted_eye_yaw + state.predicted_delta)
+    end
+    local offset = normalize_yaw(predicted_eye_yaw - predicted_lby)
+    if offset == nil or abs(offset) < 8 then
+      offset = normalize_yaw(current.eye_yaw - current.lower_body_yaw)
+    end
+    if offset == nil or abs(offset) < 8 then
+      offset = state.predicted_delta
+    end
+    if not is_finite_number(offset) or abs(offset) < 8 then
+      return nil
+    end
+    return offset > 0 and 58 or -58
+  end
+
+  local function apply_prediction(player_index, state, pattern_enabled, threshold)
+    local enough_history = state.count >= 8
+    if not reflex_antipredict_active or not pattern_enabled or not enough_history
+      or state.pattern_period == 0 or state.pattern_score < 0.72 or state.confidence < threshold then
+      restore_player_override(player_index, state)
+      state.status = not enough_history and "insufficient" or state.pattern_period == 0 and "no-repeat"
+        or state.confidence < threshold and "low-confidence" or "disabled"
+      return
+    end
+    local force_yaw = calculate_force_yaw(state)
+    if force_yaw == nil then
+      restore_player_override(player_index, state)
+      state.status = "LBY unavailable"
+      return
+    end
+    if not state.override_saved then
+      local original_value = plist.get(player_index, "Force body yaw value")
+      state.original_yaw_value = is_finite_number(original_value) and original_value or 0
+      state.original_yaw_enabled = plist.get(player_index, "Force body yaw") == true
+      state.override_saved = true
+    end
+    if state.last_force_value ~= force_yaw then
+      plist.set(player_index, "Force body yaw value", force_yaw)
+      state.last_force_value = force_yaw
+    end
+    if not state.override_active then
+      plist.set(player_index, "Force body yaw", true)
+      state.override_active = true
+    end
+    state.status = "applied"
+  end
+
+  local function read_options()
+    return PATTERN_ENABLED, ADAPTIVE_ENABLED, MOVEMENT_ENABLED,
+      CONFIDENCE_THRESHOLD, HISTORY_WINDOW
+  end
+
+  local function refresh_existing_states()
+    if not reflex_antipredict_active then
+      return
+    end
+    local pattern_enabled, adaptive_enabled, movement_enabled, threshold, window = read_options()
+    for player_index, state in pairs(states) do
+      if state.count > 0 then
+        analyze_state(state, pattern_enabled, adaptive_enabled, movement_enabled, window, false)
+        apply_prediction(player_index, state, pattern_enabled, threshold)
+      end
+    end
+  end
+
+  local function process_network_update()
+    local map_name = globals.mapname()
+    if map_name ~= last_map_name then
+      clear_all_states(true)
+      last_map_name = map_name
+    end
+    if not reflex_antipredict_active then
+      return
+    end
+    local local_player = entity.get_local_player()
+    if local_player == nil or not entity.is_alive(local_player) or map_name == nil then
+      clear_all_states(true)
+      return
+    end
+
+    for player_index in pairs(seen_players) do
+      seen_players[player_index] = nil
+    end
+    local pattern_enabled, adaptive_enabled, movement_enabled, threshold, window = read_options()
+    local now = globals.realtime()
+    local max_players = globals.maxplayers()
+    if not is_finite_number(max_players) then
+      max_players = 64
+    end
+    max_players = min(64, floor(max_players))
+    for player_index = 1, max_players do
+      if entity.is_enemy(player_index) and entity.is_alive(player_index) and not entity.is_dormant(player_index) then
+        local steam_id = entity.get_steam64(player_index)
+        if type(steam_id) == "string" and steam_id ~= "" then
+          seen_players[player_index] = true
+          local state = get_or_create_state(player_index, steam_id)
+          state.last_seen = now
+          if collect_sample(player_index, state, now) then
+            analyze_state(state, pattern_enabled, adaptive_enabled, movement_enabled, window, true)
+            apply_prediction(player_index, state, pattern_enabled, threshold)
+          elseif state.last_sample_time ~= nil and now - state.last_sample_time > 2.5 and state.count > 0 then
+            clear_history(state)
+            restore_player_override(player_index, state)
+          end
+        end
+      end
+    end
+
+    for player_index in pairs(states) do
+      if not seen_players[player_index] then
+        remove_player_state(player_index, true)
+      end
+    end
+  end
+
+  local function is_feature_selected()
+    local selected = feature_control.get(feature_control)
+    if type(selected) ~= "table" then
+      return false
+    end
+    for index = 1, #selected do
+      if selected[index] == "Anti-Predict" then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function sync_activation()
+    local should_activate = is_feature_selected()
+    local was_active = reflex_antipredict_active
+    reflex_antipredict_active = should_activate
+    if not should_activate and was_active then
+      clear_all_states(true)
+    end
+    refresh_existing_states()
+  end
+
+  feature_control.callback(feature_control, sync_activation, true)
+
+  client.set_event_callback("net_update_end", process_network_update)
+  client.set_event_callback("shutdown", function()
+    reflex_antipredict_active = false
+    clear_all_states(true)
+  end)
+end
+
+local aimbot_helper_setup_callback
+
+local function selene_buy_bot(feature_control, settings_group, group_control)
+  local controls = {
+    title = settings_group.label(settings_group, "\n Automatic purchase"),
+    primary = settings_group.combo(
+      settings_group,
+      "Buy Bot - Primary",
+      "Off", "AWP", "Scout", "G3SG1 / SCAR-20"
+    ),
+    alternative = settings_group.combo(
+      settings_group,
+      "Buy Bot - Alternative",
+      "Off", "Scout", "G3SG1 / SCAR-20"
+    ),
+    secondary = settings_group.combo(
+      settings_group,
+      "Buy Bot - Secondary",
+      "Off", "P250", "Elites", "Five-seven / Tec-9 / CZ75", "Deagle / Revolver"
+    ),
+    equipment = settings_group.selectable(
+      settings_group,
+      "Buy Bot - Equipment",
+      "Kevlar", "Kevlar + Helmet", "Defuse kit", "HE", "Smoke", "Molotov", "Taser"
+    ),
+    ignore_pistol_round = settings_group.switch(
+      settings_group,
+      "Buy Bot - Ignore pistol round"
+    ),
+    only_16k = settings_group.switch(settings_group, "Buy Bot - Only $16k")
+  }
+
+  local primary_items = {
+    ["AWP"] = "awp",
+    ["Scout"] = "ssg08",
+    ["G3SG1 / SCAR-20"] = function(team)
+      return team == 3 and "scar20" or team == 2 and "g3sg1" or nil
+    end
+  }
+  local alternative_items = {
+    ["Scout"] = "ssg08",
+    ["G3SG1 / SCAR-20"] = primary_items["G3SG1 / SCAR-20"]
+  }
+  local secondary_items = {
+    ["P250"] = "p250",
+    ["Elites"] = "elite",
+    ["Five-seven / Tec-9 / CZ75"] = function(team)
+      return team == 3 and "fn57" or team == 2 and "tec9" or nil
+    end,
+    ["Deagle / Revolver"] = "deagle"
+  }
+  local equipment_items = {
+    ["Kevlar"] = "vest",
+    ["Kevlar + Helmet"] = "vesthelm",
+    ["Defuse kit"] = "defuser",
+    ["HE"] = "hegrenade",
+    ["Smoke"] = "smokegrenade",
+    ["Molotov"] = function(team)
+      return team == 3 and "incgrenade" or team == 2 and "molotov" or nil
+    end,
+    ["Taser"] = "taser"
+  }
+  local after_round_money = cvar.mp_afterroundmoney
+
+  local function is_enabled()
+    local selected = feature_control.get(feature_control)
+    if type(selected) ~= "table" then
+      return false
+    end
+    for index = 1, #selected do
+      if selected[index] == "Buy Bot" then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function update_visibility()
+    local visible = is_enabled()
+      and group_control.get(group_control) == "Misc"
+    for _, control in pairs(controls) do
+      control.visibility(control, visible)
+    end
+    controls.alternative.visibility(
+      controls.alternative,
+      visible and controls.primary.get(controls.primary) == "AWP"
+    )
+  end
+
+  local function should_buy()
+    local local_player = entity.get_local_player()
+    if local_player == nil then
+      return false
+    end
+    local account = entity.get_prop(local_player, "m_iAccount")
+    if type(account) ~= "number" then
+      return false
+    end
+    if controls.ignore_pistol_round.get(controls.ignore_pistol_round) and account <= 1000 then
+      return false
+    end
+    if controls.only_16k.get(controls.only_16k) then
+      if after_round_money == nil then
+        return false
+      end
+      return account >= 16000 or after_round_money:get_int() >= 16000
+    end
+    return true
+  end
+
+  local function get_item(items, selection, team)
+    local item = items[selection]
+    if type(item) == "function" then
+      return item(team)
+    end
+    return item
+  end
+
+  local function has_reserved_awp()
+    local local_player = entity.get_local_player()
+    if local_player == nil then
+      return false
+    end
+    for slot = 0, 63 do
+      local weapon = entity.get_prop(local_player, "m_hMyWeapons", slot)
+      if weapon ~= nil and weapon ~= 0
+        and entity.get_prop(weapon, "m_iItemDefinitionIndex") == 9 then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function process_buy()
+    if not is_enabled() or not should_buy() then
+      return
+    end
+    local local_player = entity.get_local_player()
+    if local_player == nil then
+      return
+    end
+    local team = entity.get_prop(local_player, "m_iTeamNum")
+    local purchases = {}
+
+    local function add_purchase(items, selection)
+      local item = get_item(items, selection, team)
+      if item ~= nil then
+        purchases[#purchases + 1] = "buy " .. item .. ";"
+      end
+    end
+
+    local primary = controls.primary.get(controls.primary)
+    add_purchase(primary_items, primary)
+    if primary == "AWP" then
+      local function buy_alternative()
+        if not is_enabled() or not should_buy() or has_reserved_awp()
+          or controls.primary.get(controls.primary) ~= "AWP" then
+          return
+        end
+        local current_player = entity.get_local_player()
+        local current_team = current_player ~= nil
+          and entity.get_prop(current_player, "m_iTeamNum") or nil
+        local alternative = get_item(
+          alternative_items,
+          controls.alternative.get(controls.alternative),
+          current_team
+        )
+        if alternative ~= nil then
+          client.exec("buy " .. alternative)
+        end
+      end
+      client.delay_call(client.latency() + 0.15, buy_alternative)
+    end
+
+    add_purchase(secondary_items, controls.secondary.get(controls.secondary))
+    local equipment = controls.equipment.get(controls.equipment)
+    if type(equipment) == "table" then
+      for index = 1, #equipment do
+        add_purchase(equipment_items, equipment[index])
+      end
+    end
+
+    if #purchases > 0 then
+      client.exec(table.concat(purchases))
+    end
+  end
+
+  local function on_round_prestart()
+    if not is_enabled() then
+      return
+    end
+    client.delay_call(
+      client.latency() + globals.tickinterval() * 8,
+      process_buy
+    )
+  end
+
+  feature_control.callback(feature_control, update_visibility, true)
+  group_control.callback(group_control, update_visibility)
+  controls.primary.callback(controls.primary, update_visibility)
+  client.set_event_callback("round_prestart", on_round_prestart)
+end
+
+local function selene_aimbot_helper(feature_control, settings_group, group_control, ping_spike_refs)
+  local trigger_options = {
+    "Enemy HP < X",
+    "X Missed Shots",
+    "Lethal",
+    "Height advantage",
+    "Enemy higher than you"
+  }
+  local action_options = {
+    "Force safe point",
+    "Prefer body aim",
+    "Force body aim",
+    "Ping spike"
+  }
+
+  local function create_action_controls(weapon_name, action_name)
+    local prefix = "Aimbot Helper - " .. weapon_name .. " - " .. action_name
+    return {
+      triggers = settings_group.selectable(
+        settings_group,
+        prefix .. " triggers",
+        unpack(trigger_options)
+      ),
+      hp = settings_group.slider(settings_group, prefix .. " HP threshold", 1, 100, 50, true, "hp"),
+      misses = settings_group.slider(settings_group, prefix .. " missed shots", 1, 10, 2, true, "shots")
+    }
+  end
+
+  local function create_weapon_controls(weapon_name, suffix, default_ping_spike)
+    return {
+      name = weapon_name,
+      suffix = suffix,
+      select = settings_group.selectable(
+        settings_group,
+        "Aimbot Helper - " .. suffix .. " settings",
+        unpack(action_options)
+      ),
+      force_safe = create_action_controls(suffix, "Force safe point"),
+      prefer_body = create_action_controls(suffix, "Prefer body aim"),
+      force_body = create_action_controls(suffix, "Force body aim"),
+      ping_spike = settings_group.slider(
+        settings_group,
+        "Aimbot Helper - " .. suffix .. " ping spike",
+        1,
+        200,
+        default_ping_spike,
+        true,
+        "ms"
+      )
+    }
+  end
+
+  local controls = {
+    title = settings_group.label(settings_group, "\n Aimbot Helper"),
+    weapon = settings_group.combo(
+      settings_group,
+      "Aimbot Helper - Weapon",
+      "SSG-08",
+      "AWP",
+      "Auto Snipers"
+    ),
+    ssg = create_weapon_controls("SSG-08", "SSG-08", 80),
+    awp = create_weapon_controls("AWP", "AWP", 130),
+    auto = create_weapon_controls("Auto Snipers", "Auto Snipers", 105)
+  }
+  local weapon_controls = { controls.ssg, controls.awp, controls.auto }
+  local active_targets = {}
+  local seen_targets = {}
+  local miss_count = 0
+  local helper_was_active = false
+  local ping_spike_enabled_ref
+  local ping_spike_amount_ref
+  if type(ping_spike_refs) == "table" then
+    local ping_spike_controls = ping_spike_refs
+    if ping_spike_refs.reference ~= nil then
+      ping_spike_controls = { ping_spike_refs }
+    end
+    for index = 1, #ping_spike_controls do
+      local control = ping_spike_controls[index]
+      local control_type = control.type(control)
+      if control_type == "checkbox" then
+        ping_spike_enabled_ref = control
+      elseif control_type == "slider" then
+        ping_spike_amount_ref = control
+      end
+    end
+  end
+  local ping_spike_saved = false
+  local original_ping_enabled
+  local original_ping_amount
+
+  local function has_selection(control, option)
+    local selected = control.get(control)
+    if type(selected) ~= "table" then
+      return false
+    end
+    for index = 1, #selected do
+      if selected[index] == option then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function is_feature_selected()
+    return has_selection(feature_control, "Aimbot Helper")
+  end
+
+  local function update_action_visibility(action, visible)
+    action.triggers.visibility(action.triggers, visible)
+    local has_hp_trigger = has_selection(action.triggers, "Enemy HP < X")
+    local has_miss_trigger = has_selection(action.triggers, "X Missed Shots")
+    action.hp.visibility(action.hp, visible and has_hp_trigger)
+    action.misses.visibility(action.misses, visible and has_miss_trigger)
+  end
+
+  local function update_visibility()
+    local visible = is_feature_selected()
+      and group_control.get(group_control) == "Rage Bot"
+    controls.title.visibility(controls.title, visible)
+    controls.weapon.visibility(controls.weapon, visible)
+    local selected_weapon = controls.weapon.get(controls.weapon)
+
+    for index = 1, #weapon_controls do
+      local weapon = weapon_controls[index]
+      local weapon_visible = visible and selected_weapon == weapon.name
+      weapon.select.visibility(weapon.select, weapon_visible)
+
+      local safe_visible = weapon_visible
+        and has_selection(weapon.select, "Force safe point")
+      local prefer_visible = weapon_visible
+        and has_selection(weapon.select, "Prefer body aim")
+      local force_visible = weapon_visible
+        and has_selection(weapon.select, "Force body aim")
+
+      update_action_visibility(weapon.force_safe, safe_visible)
+      update_action_visibility(weapon.prefer_body, prefer_visible)
+      update_action_visibility(weapon.force_body, force_visible)
+      weapon.ping_spike.visibility(
+        weapon.ping_spike,
+        weapon_visible and has_selection(weapon.select, "Ping spike")
+      )
+    end
+  end
+
+  local function restore_ping_spike()
+    if not ping_spike_saved then
+      return
+    end
+    if ping_spike_enabled_ref ~= nil and original_ping_enabled ~= nil then
+      ping_spike_enabled_ref.set(ping_spike_enabled_ref, original_ping_enabled)
+    end
+    if ping_spike_amount_ref ~= nil and original_ping_amount ~= nil then
+      ping_spike_amount_ref.set(ping_spike_amount_ref, original_ping_amount)
+    end
+    original_ping_enabled = nil
+    original_ping_amount = nil
+    ping_spike_saved = false
+  end
+
+  local function apply_ping_spike(amount)
+    if ping_spike_enabled_ref == nil or ping_spike_amount_ref == nil then
+      return
+    end
+    if not ping_spike_saved then
+      original_ping_enabled = ping_spike_enabled_ref.get(ping_spike_enabled_ref)
+      original_ping_amount = ping_spike_amount_ref.get(ping_spike_amount_ref)
+      ping_spike_saved = true
+    end
+    if ping_spike_enabled_ref.get(ping_spike_enabled_ref) ~= true then
+      ping_spike_enabled_ref.set(ping_spike_enabled_ref, true)
+    end
+    if ping_spike_amount_ref.get(ping_spike_amount_ref) ~= amount then
+      ping_spike_amount_ref.set(ping_spike_amount_ref, amount)
+    end
+  end
+
+  local function update_player_override(player, state, key, field, value)
+    local saved = state[key]
+    if value == nil then
+      if saved ~= nil then
+        if state.steam_id == nil or entity.get_steam64(player) == state.steam_id then
+          local original = saved.original
+          if original == nil then
+            original = "-"
+          end
+          plist.set(player, field, original)
+        end
+        state[key] = nil
+      end
+      return
+    end
+
+    if saved == nil then
+      saved = { original = plist.get(player, field) }
+      state[key] = saved
+    end
+    plist.set(player, field, value)
+  end
+
+  local function restore_target(player, state)
+    update_player_override(player, state, "safe_point", "Override safe point", nil)
+    update_player_override(player, state, "body_aim", "Override prefer body aim", nil)
+  end
+
+  local function clear_targets()
+    for player, state in pairs(active_targets) do
+      restore_target(player, state)
+      active_targets[player] = nil
+    end
+    for player in pairs(seen_targets) do
+      seen_targets[player] = nil
+    end
+  end
+
+  local function get_target_state(player)
+    local steam_id = entity.get_steam64(player)
+    local state = active_targets[player]
+    if state ~= nil and state.steam_id ~= steam_id then
+      restore_target(player, state)
+      active_targets[player] = nil
+      state = nil
+    end
+    if state == nil then
+      state = { steam_id = steam_id }
+      active_targets[player] = state
+    end
+    return state
+  end
+
+  local function check_triggers(action, hp, height_diff)
+    local triggers = action.triggers.get(action.triggers)
+    if type(triggers) ~= "table" then
+      return false
+    end
+    for index = 1, #triggers do
+      local trigger = triggers[index]
+      if trigger == "Enemy HP < X"
+        and hp < action.hp.get(action.hp) then
+        return true
+      elseif trigger == "X Missed Shots"
+        and miss_count >= action.misses.get(action.misses) then
+        return true
+      elseif trigger == "Lethal" and hp <= 30 then
+        return true
+      elseif trigger == "Height advantage" and height_diff > 70 then
+        return true
+      elseif trigger == "Enemy higher than you" and height_diff < -70 then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function get_weapon_controls(weapon)
+    local class_name = entity.get_classname(weapon)
+    if class_name == "CWeaponSSG08" then
+      return controls.ssg
+    elseif class_name == "CWeaponAWP" then
+      return controls.awp
+    elseif class_name == "CWeaponG3SG1" or class_name == "CWeaponSCAR20" then
+      return controls.auto
+    end
+    return nil
+  end
+
+  local function on_setup_command()
+    if not is_feature_selected() then
+      if helper_was_active then
+        clear_targets()
+        miss_count = 0
+        helper_was_active = false
+      end
+      restore_ping_spike()
+      return
+    end
+    helper_was_active = true
+
+    local local_player = entity.get_local_player()
+    if local_player == nil or not entity.is_alive(local_player) then
+      clear_targets()
+      restore_ping_spike()
+      miss_count = 0
+      return
+    end
+
+    local weapon = entity.get_player_weapon(local_player)
+    local config = weapon ~= nil and get_weapon_controls(weapon) or nil
+    if config == nil then
+      clear_targets()
+      restore_ping_spike()
+      return
+    end
+
+    local _, _, local_z = entity.get_origin(local_player)
+    if type(local_z) ~= "number" then
+      clear_targets()
+      restore_ping_spike()
+      return
+    end
+
+    if has_selection(config.select, "Ping spike") then
+      apply_ping_spike(config.ping_spike.get(config.ping_spike))
+    else
+      restore_ping_spike()
+    end
+
+    for player in pairs(seen_targets) do
+      seen_targets[player] = nil
+    end
+
+    local enemies = entity.get_players(true)
+    for index = 1, #enemies do
+      local target = enemies[index]
+      if target ~= nil and entity.is_alive(target) and not entity.is_dormant(target) then
+        local _, _, target_z = entity.get_origin(target)
+        local hp = entity.get_prop(target, "m_iHealth")
+        if type(target_z) == "number" and type(hp) == "number" then
+          seen_targets[target] = true
+          local state = get_target_state(target)
+          local height_diff = math.ceil(local_z - target_z)
+          local safe_point = has_selection(config.select, "Force safe point")
+            and check_triggers(config.force_safe, hp, height_diff)
+          local prefer_body = has_selection(config.select, "Prefer body aim")
+            and check_triggers(config.prefer_body, hp, height_diff)
+          local force_body = has_selection(config.select, "Force body aim")
+            and check_triggers(config.force_body, hp, height_diff)
+
+          update_player_override(
+            target,
+            state,
+            "safe_point",
+            "Override safe point",
+            safe_point and "On" or nil
+          )
+          update_player_override(
+            target,
+            state,
+            "body_aim",
+            "Override prefer body aim",
+            force_body and "Force" or prefer_body and "On" or nil
+          )
+        end
+      end
+    end
+
+    for target, state in pairs(active_targets) do
+      if not seen_targets[target] then
+        restore_target(target, state)
+        active_targets[target] = nil
+      end
+    end
+  end
+
+  local function on_aim_miss(event)
+    if is_feature_selected() and event.reason ~= "prediction error" then
+      miss_count = miss_count + 1
+    end
+  end
+
+  local function on_round_prestart()
+    miss_count = 0
+    clear_targets()
+    restore_ping_spike()
+  end
+
+  local function on_shutdown()
+    clear_targets()
+    restore_ping_spike()
+  end
+
+  feature_control.callback(feature_control, update_visibility, true)
+  group_control.callback(group_control, update_visibility)
+  controls.weapon.callback(controls.weapon, update_visibility)
+  for index = 1, #weapon_controls do
+    local weapon = weapon_controls[index]
+    weapon.select.callback(weapon.select, update_visibility)
+    weapon.force_safe.triggers.callback(weapon.force_safe.triggers, update_visibility)
+    weapon.prefer_body.triggers.callback(weapon.prefer_body.triggers, update_visibility)
+    weapon.force_body.triggers.callback(weapon.force_body.triggers, update_visibility)
+  end
+  client.set_event_callback("aim_miss", on_aim_miss)
+  client.set_event_callback("round_prestart", on_round_prestart)
+  client.set_event_callback("shutdown", on_shutdown)
+
+  return on_setup_command
+end
+
+local function selene_hideshots_fix(feature_control, hideshots_refs, double_tap_refs, fakeduck_ref, fake_lag_ref)
+  local fake_lag_was_enabled
+  local fake_lag_overridden = false
+
+  local function is_feature_selected()
+    local selected = feature_control.get(feature_control)
+    if type(selected) ~= "table" then
+      return false
+    end
+    for index = 1, #selected do
+      if selected[index] == "Hideshots Fix" then
+        return true
+      end
+    end
+    return false
+  end
+
+  local function is_hotkey_active(references)
+    return type(references) == "table"
+      and references[1] ~= nil
+      and references[2] ~= nil
+      and references[1].get(references[1]) == true
+      and references[2].get(references[2]) == true
+  end
+
+  local function restore_fake_lag()
+    if not fake_lag_overridden then
+      return
+    end
+    fake_lag_ref.set(fake_lag_ref, fake_lag_was_enabled)
+    fake_lag_was_enabled = nil
+    fake_lag_overridden = false
+  end
+
+  local function update()
+    local should_disable = is_feature_selected()
+      and is_hotkey_active(hideshots_refs)
+      and not is_hotkey_active(double_tap_refs)
+      and fakeduck_ref.get(fakeduck_ref) ~= true
+
+    if not should_disable then
+      restore_fake_lag()
+      return
+    end
+
+    if not fake_lag_overridden then
+      fake_lag_was_enabled = fake_lag_ref.get(fake_lag_ref)
+      fake_lag_overridden = true
+    end
+    if fake_lag_ref.get(fake_lag_ref) == true then
+      fake_lag_ref.set(fake_lag_ref, false)
+    end
+  end
+
+  feature_control.callback(feature_control, update, true)
+  client.set_event_callback("setup_command", update)
+  client.set_event_callback("paint_ui", restore_fake_lag)
+  client.set_event_callback("shutdown", restore_fake_lag)
+end
 
 local function selene_main()
   local application_started = false
@@ -326,6 +1805,7 @@ local function selene_main()
     resolver_debug_position = { x = 0.02, y = 0.02 }
   end
   local resolver_debug_drag = { active = false, was_down = false, offset_x = 0, offset_y = 0 }
+  local resolver_debug_panel_paint_registered = false
   local function resolver_debug_gradient(text, phase)
     local parts = {}
     local ratio = #text > 1 and 1 / (#text - 1) or 0
@@ -454,7 +1934,17 @@ local function selene_main()
       end
     end
   end
-  client.set_event_callback("paint", draw_resolver_debug_panel)
+  local function sync_resolver_debug_panel()
+    local control = resolver_debug_panel_enabled
+    local enabled = control.get(control)
+    if enabled == resolver_debug_panel_paint_registered then
+      return
+    end
+    resolver_debug_panel_paint_registered = enabled
+    local set_callback = enabled and client.set_event_callback or client.unset_event_callback
+    set_callback("paint", draw_resolver_debug_panel)
+  end
+
   client.set_event_callback("shutdown", function()
     database.write(resolver_debug_position_key, resolver_debug_position)
   end)
@@ -3143,7 +4633,7 @@ local function selene_main()
                                                           ragebot_selection, selectable, callback_5, custom_hit_chance_indicator, in_air_control, in_air, temporary_14, enabled_5, callback_12, control_3, control_4, value_104, value_109, value_101, value_106, value_103, value_100, value_110, value_107, value_105, value_108, value_102 = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, temporary_28, callback_14, enabled_16, value_117, value_121, value_119, value_116, value_124, value_122, value_120, value_123, value_118
                                                           selectable = menu_group.selectable
                                                           in_air = "Custom Hit Chance"
-                                                          selectable = selectable(menu_group, "Features", "Single Shot on Quick Peek", "Improve Jump Scout", in_air, "Intelligence improvements")
+                                                          selectable = selectable(menu_group, "Features", "Single Shot on Quick Peek", "Improve Jump Scout", in_air, "Intelligence improvements", "Anti-Predict", "Hideshots Fix", "Aimbot Helper")
                                                           ragebot_selection = selectable
                                                           local intelligence_type = menu_group.selectable(menu_group, "Intelligence type", "Fake Lag", "Immediate Teleport", "Ping Spike", "Jitter Correction")
                                                           intelligence_type.visibility(intelligence_type, false)
@@ -3159,7 +4649,7 @@ local function selene_main()
                                                             intelligence_type.visibility(intelligence_type, enabled)
                                                           end
                                                           ragebot_selection.callback(ragebot_selection, update_intelligence_visibility, true)
-                                                          outlaw_intelligence_controls = { features = ragebot_selection, types = intelligence_type }
+                                                          selene_intelligence_controls = { features = ragebot_selection, types = intelligence_type }
                                                           selectable = selene_group_control.callback
                                                           -- F263
                                                           function callback_5(self)
@@ -3178,6 +4668,12 @@ local function selene_main()
                                                           end
                                                           selectable(selene_group_control, callback_5, true)
                                                           menu_controls.ragebot_selection = ragebot_selection
+                                                          aimbot_helper_setup_callback = selene_aimbot_helper(
+                                                            ragebot_selection,
+                                                            screen_size.create("aa", "Fake lag"),
+                                                            selene_group_control,
+                                                            screen_size.find("MISC", "Miscellaneous", "Ping spike")
+                                                          )
                                                           selectable = (menu_group.label(menu_group, "\n sep"))
                                                         end
                                                         callback_5 = {}
@@ -3596,6 +5092,14 @@ local function selene_main()
                                             value_28(value_29, conditions_control, true)
                                           end
                                           menu_controls.resolver = resolver
+                                          selene_antipredict_module(menu_controls.ragebot_selection)
+                                          selene_hideshots_fix(
+                                            menu_controls.ragebot_selection,
+                                            screen_size.find("AA", "Other", "On shot anti-aim"),
+                                            screen_size.find("RAGE", "Aimbot", "Double tap"),
+                                            screen_size.find("RAGE", "Other", "Duck peek assist")[1],
+                                            screen_size.find("AA", "Fake lag", "Enabled")[1]
+                                          )
                                         end
                                         local value_66, value_21, value_22, value_67, value_23, value_68, value_69, value_24, value_70, value_25, value_71, value_26, value_72
                                         scratch_value_011, scratch_value_013, scratch_value_015, scratch_value_018, scratch_value_019, value_22, value_25, value_23, value_26, value_21, value_24, value_68, value_66, value_72, value_70, value_69, value_71, value_67 = conditions_control, value_36, value_28, value_30, value_27, value_77, value_76, value_82, value_85, value_81, value_84, value_83, value_73, value_80, value_78, value_75, value_79, value_74
@@ -3721,14 +5225,16 @@ local function selene_main()
                                             menu_controls.unsafe_dt_recharge = temporary
                                           end
                                           temporary_12 = menu_group.combo
-                                          temporary_12 = temporary_12(menu_group, "\aFF6363FFExperimental \aCDCDCDFFPredict", "Off", "High Ping > 60", "Low Ping < 45")
+                                          temporary_12 = temporary_12(menu_group, "\aFF6363FFExperimental \aCDCDCDFFPredict", "Off", "Adaptive (Ping)", "High Ping > 60", "Low Ping < 45")
                                           temporary_13 = temporary_12
                                           local prediction_cvars = {
                                             interp = cvar.cl_interp,
                                             ratio = cvar.cl_interp_ratio,
-                                            interpolate = cvar.cl_interpolate
+                                            interpolate = cvar.cl_interpolate,
+                                            updaterate = cvar.cl_updaterate
                                           }
                                           local original_prediction_cvars
+                                          local adaptive_prediction_profile
                                           local function restore_prediction_cvars()
                                             if original_prediction_cvars == nil then
                                               return
@@ -3737,10 +5243,36 @@ local function selene_main()
                                             prediction_cvars.ratio:set_int(original_prediction_cvars.ratio)
                                             prediction_cvars.interpolate:set_int(original_prediction_cvars.interpolate)
                                             original_prediction_cvars = nil
+                                            adaptive_prediction_profile = nil
                                           end
                                           local function update_experimental_predict(self)
                                             local mode = self.get(self)
                                             if mode == "Off" then
+                                              restore_prediction_cvars()
+                                              return
+                                            end
+                                            local profile
+                                            if mode == "Adaptive (Ping)" then
+                                              local ping = latency()
+                                              if type(ping) ~= "number" or ping <= 0 then
+                                                return
+                                              end
+                                              ping = ping * 1000
+                                              if ping > 60 then
+                                                adaptive_prediction_profile = "high"
+                                              elseif ping < 45 then
+                                                adaptive_prediction_profile = "low"
+                                              elseif adaptive_prediction_profile == nil then
+                                                adaptive_prediction_profile = ping >= 52.5 and "high" or "low"
+                                              end
+                                              profile = adaptive_prediction_profile
+                                            elseif mode == "High Ping > 60" then
+                                              profile = "high"
+                                              adaptive_prediction_profile = nil
+                                            elseif mode == "Low Ping < 45" then
+                                              profile = "low"
+                                              adaptive_prediction_profile = nil
+                                            else
                                               restore_prediction_cvars()
                                               return
                                             end
@@ -3751,17 +5283,34 @@ local function selene_main()
                                                 interpolate = prediction_cvars.interpolate:get_int()
                                               }
                                             end
-                                            if mode == "High Ping > 60" then
-                                              prediction_cvars.interp:set_float(0.025)
-                                              prediction_cvars.ratio:set_int(2)
-                                            elseif mode == "Low Ping < 45" then
-                                              prediction_cvars.interp:set_float(0.015)
-                                              prediction_cvars.ratio:set_int(1)
+                                            local target_ratio = profile == "high" and 2 or 1
+                                            local update_rate = prediction_cvars.updaterate ~= nil
+                                              and prediction_cvars.updaterate:get_int() or 0
+                                            if update_rate <= 0 then
+                                              local interval = tickinterval()
+                                              if type(interval) ~= "number" or interval <= 0 then
+                                                return
+                                              end
+                                              update_rate = floor(1 / interval + 0.5)
                                             end
-                                            prediction_cvars.interpolate:set_int(1)
+                                            local target_interp = target_ratio / update_rate
+                                            if abs(prediction_cvars.interp:get_float() - target_interp) > 0.0001 then
+                                              prediction_cvars.interp:set_float(target_interp)
+                                            end
+                                            if prediction_cvars.ratio:get_int() ~= target_ratio then
+                                              prediction_cvars.ratio:set_int(target_ratio)
+                                            end
+                                            if prediction_cvars.interpolate:get_int() ~= 1 then
+                                              prediction_cvars.interpolate:set_int(1)
+                                            end
                                           end
                                           temporary_12 = temporary_13.callback
                                           temporary_12(temporary_13, update_experimental_predict, true)
+                                          client.set_event_callback("net_update_end", function()
+                                            if temporary_13.get(temporary_13) ~= "Off" then
+                                              update_experimental_predict(temporary_13)
+                                            end
+                                          end)
                                           client.set_event_callback("shutdown", restore_prediction_cvars)
                                           temporary_12 = selene_group_control.callback
                                           -- F293: update_predict_visibility
@@ -3847,6 +5396,28 @@ local function selene_main()
                                         temporary_2 = "Static AA on Zeus"
                                         features = menu_group.selectable(unbalance_dormant_aa, temporary_11, temporary_10, temporary_6, temporary_7, temporary_3, temporary_5, temporary_2)
                                         antiaim.features = features
+                                        local anti_bruteforce_controls = {}
+                                        anti_bruteforce_controls.enabled = menu_group.switch(menu_group, "Anti-bruteforce")
+                                        anti_bruteforce_controls.mode = menu_group.combo(
+                                          menu_group,
+                                          "\n Anti-bruteforce mode",
+                                          "Random",
+                                          "Increase",
+                                          "Decrease",
+                                          "Meta"
+                                        )
+                                        anti_bruteforce_controls.sources = menu_group.selectable(
+                                          menu_group,
+                                          "\n React to",
+                                          "Near miss",
+                                          "Body hit"
+                                        )
+                                        antiaim.anti_bruteforce = anti_bruteforce_controls
+                                        setup_aa_antibruteforce(
+                                          anti_bruteforce_controls,
+                                          selene_group_control,
+                                          antiaim_group_control
+                                        )
                                         temporary_10 = menu_group
                                         temporary_11 = menu_group.combo
                                         temporary_6 = "Unbalance Dormant Anti Aim"
@@ -5366,9 +6937,9 @@ local function selene_main()
                                                   enabled_7 = menu_group.slider
                                                   font = "                 Crosshair Indicators"
                                                   temporary_26 = 1
-                                                  temporary_25 = 3
+                                                  temporary_25 = 4
                                                   temporary_24 = 1
-                                                  value_156 = { "Off", "Old", "New" }
+                                                  value_156 = { "Off", "Old", "New", "Pixel" }
                                                   enabled_7 = enabled_7(font_2, font, temporary_26, temporary_25, temporary_24, true, nil, 1, value_156)
                                                   crosshair_indicators.enabled = enabled_7
                                                   font_2 = menu_group
@@ -5395,7 +6966,7 @@ local function selene_main()
                                                       local control_3 = crosshair_indicators.enabled
                                                       control_3.visibility(control_3, value_2)
                                                       local control_2 = crosshair_indicators.selection
-                                                      control_2.visibility(control_2, value_2 and value == 2)
+                                                      control_2.visibility(control_2, value_2 and (value == 2 or value == 4))
                                                       local crosshair_indicators_color = crosshair_indicators.color
                                                       crosshair_indicators_color.visibility(crosshair_indicators_color, value_2 and value ~= 1)
                                                       return
@@ -5606,38 +7177,24 @@ local function selene_main()
                                             temporary_24(enabled, enabled_11, true)
                                             menu_controls.watermark = temporary_26
                                           end
-                                          temporary_24 = new_table
-                                          temporary_24 = temporary_24()
-                                          temporary_25 = temporary_24
-                                          temporary_24 = menu_group.slider
-                                          local state_11 = { "Off", "On" }
-                                          temporary_24 = temporary_24(menu_group, "                      Taser Warning", 1, 2, 1, true, nil, 1, state_11)
-                                        end
-                                        temporary_25.enabled = temporary_24
-                                        temporary_24 = menu_group.color_picker
-                                        temporary_24 = temporary_24(menu_group, "Zeus Warning Color", 255, 255, 255, 255)
-                                        temporary_25.color = temporary_24
-                                        do
-                                          temporary_24 = --[[ F294 ]] function()
-                                            local value_2 = selene_group_control.get(selene_group_control) == "Visuals"
-                                            local enabled = temporary_25.enabled
-                                            local value = enabled.get(enabled) == 2
-                                            local control_2 = temporary_25.enabled
-                                            control_2.visibility(control_2, value_2)
-                                            local color_8 = temporary_25.color
-                                            local visibility = color_8.visibility
-                                            local value_5 = value_2 and value
-                                            visibility(color_8, value_5)
-                                            return
-                                          end
-                                        end
-                                        value_155 = temporary_24
-                                        selene_group_control.callback(selene_group_control, value_155, true)
-                                        enabled = temporary_25.enabled
-                                        value_155 = temporary_24
-                                        enabled.callback(enabled, value_155, true)
-                                        menu_controls.zeus_warning = temporary_25
                                       end
+                                      local force_text_control = menu_group.slider(
+                                        menu_group,
+                                        "                 Force Text Watermark",
+                                        0,
+                                        1,
+                                        0,
+                                        true,
+                                        nil,
+                                        1,
+                                        { [0] = "Off", [1] = "On" }
+                                      )
+                                      menu_controls.watermark.force_text = force_text_control
+                                      local function update_force_text_visibility()
+                                        local visible = selene_group_control.get(selene_group_control) == "Visuals"
+                                        force_text_control.visibility(force_text_control, visible)
+                                      end
+                                      selene_group_control.callback(selene_group_control, update_force_text_visibility, true)
                                       temporary_24 = {}
                                       enabled = menu_group.selectable(menu_group, "\aC4C45FFF                      FamilyHook UI", "FPS", "Ping", "Time")
                                       temporary_24.enabled = enabled
@@ -5669,6 +7226,11 @@ local function selene_main()
                                 menu_controls.panorama_indicators = temporary_24
                               end
                               resolver_debug_panel_enabled = menu_group.switch(menu_group, "Debug panel")
+                              resolver_debug_panel_enabled.callback(
+                                resolver_debug_panel_enabled,
+                                sync_resolver_debug_panel,
+                                true
+                              )
                               local function update_debug_panel_visibility()
                                 local visible = selene_group_control.get(selene_group_control) == "Visuals"
                                 resolver_debug_panel_enabled.visibility(resolver_debug_panel_enabled, visible)
@@ -5775,8 +7337,51 @@ local function selene_main()
                                     temporary_21 = "Force second zoom"
                                     temporary_15 = "Console filter"
                                     temporary_19 = "Clan tag"
-                                    log_events = log_events(menu_group, "                          Features", enabled_6, temporary_21, temporary_15, temporary_19)
+                                    log_events = log_events(menu_group, "                          Features", enabled_6, temporary_21, temporary_15, temporary_19, "Buy Bot", "Reveal enemy team chat", "FPS optimize", "Shared logo")
                                     features_2 = log_events
+                                    local fps_preset = menu_group.combo(menu_group, "\nFPS optimization preset", "Maximum FPS", "Recommended", "Custom")
+                                    local fps_list = menu_group.selectable(
+                                      menu_group,
+                                      "\nFPS optimization list",
+                                      "Decals",
+                                      "Blood and gibs",
+                                      "Tracers",
+                                      "Breakable debris",
+                                      "3D sky",
+                                      "Ropes",
+                                      "Shadows",
+                                      "Particles",
+                                      "Sprites",
+                                      "Dynamic lights",
+                                      "Weapon effects",
+                                      "Bloom",
+                                      "Map details",
+                                      "Ragdolls"
+                                    )
+                                    fps_preset.visibility(fps_preset, false)
+                                    fps_list.visibility(fps_list, false)
+                                    menu_controls.fps_optimize = {
+                                      preset = fps_preset,
+                                      list = fps_list
+                                    }
+                                    local fps_controls_visibility
+                                    fps_controls_visibility = function()
+                                      local misc_visible = selene_group_control.get(selene_group_control) == "Misc"
+                                      local enabled = value_11(features_2.get(features_2), "FPS optimize")
+                                      fps_preset.visibility(fps_preset, misc_visible and enabled)
+                                      fps_list.visibility(
+                                        fps_list,
+                                        misc_visible and enabled and fps_preset.get(fps_preset) == "Custom"
+                                      )
+                                    end
+                                    selene_group_control.callback(selene_group_control, fps_controls_visibility, true)
+                                    features_2.callback(features_2, fps_controls_visibility, true)
+                                    fps_preset.callback(fps_preset, fps_controls_visibility, true)
+                                    selene_buy_bot(
+                                      features_2,
+                                      screen_size.create("aa", "Fake lag"),
+                                      selene_group_control
+                                    )
                                     menu_controls.features = features_2
                                     log_events = {}
                                     enabled_6 = "                         Log Events"
@@ -7764,6 +9369,10 @@ local function selene_main()
                                         if value_3 then
                                           temporary_11 = value_3
                                         end
+                                        temporary_11, value_99 = _G.__selene_adjust_aa_antibruteforce(
+                                          temporary_11,
+                                          value_99
+                                        )
                                         local value_2 = normalize_yaw(temporary_11)
                                         local value = normalize_yaw(value_99)
                                         local enabled = captured_value_88_175.enabled
@@ -7937,20 +9546,19 @@ local function selene_main()
                                 return
                               end, true)
                               -- F100: seconds_to_ticks
-                              local function seconds_to_ticks(seconds)
-                                return floor(0.5 + seconds / (tickinterval()))
+                              local function seconds_to_ticks(seconds, interval)
+                                return floor(0.5 + seconds / interval)
                               end
                               -- F101: capture_player_snapshot
-                              local function capture_player_snapshot(player_index)
+                              local function capture_player_snapshot(player_index, current_tick, current_time, tick_interval)
                                 local state = {}
-                                state.origin = (vector(get_origin(player_index)))
                                 state.vev_velocity = (vector(get_prop(player_index, "m_vecVelocity")))
                                 state.view_offset = (get_prop(player_index, "m_vecViewOffset[2]"))
                                 state.eye_angles = (vector(get_prop(player_index, "m_angEyeAngles")))
                                 state.lowerbody_target = (get_prop(player_index, "m_flLowerBodyYawTarget"))
-                                state.simulation_time = (seconds_to_ticks(get_prop(player_index, "m_flSimulationTime")))
-                                state.tickcount = (tickcount())
-                                state.curtime = (curtime())
+                                state.simulation_time = (seconds_to_ticks(get_prop(player_index, "m_flSimulationTime"), tick_interval))
+                                state.tickcount = current_tick
+                                state.curtime = current_time
                                 state.tickbase = (get_prop(player_index, "m_nTickBase"))
                                 state.origin = (vector(get_prop(player_index, "m_vecOrigin")))
                                 state.flags = (get_prop(player_index, "m_fFlags"))
@@ -7970,11 +9578,12 @@ local function selene_main()
                               end
                               -- F118: classify_player_movement
                               function classify_player_movement(player_index_2)
-                                local duck_amount_2 = get_prop(player_index_2, "m_flDuckAmount")
+                                local duck_amount_2 = get_prop(player_index_2, "m_flDuckAmount") or 0
                                 if 0 < duck_amount_2 and duck_amount_2 < 0.9 then
                                   return "Fake Duck"
                                 end
-                                local value_4 = band((get_prop(player_index_2, "m_fFlags")), 1) ~= 0
+                                local flags = get_prop(player_index_2, "m_fFlags") or 1
+                                local value_4 = band(flags, 1) ~= 0
                                 local value_5 = duck_amount_2 == 1
                                 if not value_4 then
                                   return value_5 and "Crouch-Air" or "Air"
@@ -7982,8 +9591,12 @@ local function selene_main()
                                 if value_5 then
                                   return "Crouching"
                                 end
-                                local value_2 = vector(get_prop(player_index_2, "m_vecVelocity"))
-                                local value = value_2.length(value_2)
+                                local velocity_x, velocity_y, velocity_z = get_prop(player_index_2, "m_vecVelocity")
+                                local value = 0
+                                if type(velocity_x) == "number" and type(velocity_y) == "number" then
+                                  velocity_z = type(velocity_z) == "number" and velocity_z or 0
+                                  value = math.sqrt(velocity_x * velocity_x + velocity_y * velocity_y + velocity_z * velocity_z)
+                                end
                                 if 60 < value and value < 70 then
                                   return "Slowwalk"
                                 end
@@ -8025,11 +9638,11 @@ local function selene_main()
                               end
                               -- F117: estimate_choked_ticks
                               local function estimate_choked_ticks(player_index_5)
-                                if not (check_simulation_times(player_index_5)) then
+                                local simulation_time, animation_time = read_simulation_times(player_index_5)
+                                if type(simulation_time) ~= "number" or type(animation_time) ~= "number" then
                                   return 0
                                 end
-                                local value = read_simulation_times(player_index_5)
-                                local value_2 = curtime() - value
+                                local value_2 = curtime() - simulation_time
                                 local value_4 = toticks(max(0, value_2 - (latency())))
                                 local sv_maxusrcmdprocessticks = cvar.sv_maxusrcmdprocessticks
                                 return clamp(value_4, 0, sv_maxusrcmdprocessticks.get_string(sv_maxusrcmdprocessticks) - 2)
@@ -8041,7 +9654,9 @@ local function selene_main()
                                   yaw_cache = {},
                                   sample_count = 0,
                                   last_simulation_times = {},
-                                  difference = 0
+                                  difference = 0,
+                                  candidate = false,
+                                  candidate_count = 0
                                 }
                               }
                               resolver_state.defensive = {}
@@ -8111,8 +9726,8 @@ local function selene_main()
                                     local valid_delta = normalize_yaw(yaw - state.valid_yaw)
                                     if abs(valid_delta) >= 20 then
                                       state.side = valid_delta > 0 and 1 or -1
+                                      state.valid_yaw = normalize_yaw(yaw)
                                     end
-                                    state.valid_yaw = normalize_yaw(yaw)
                                     if type(pitch) == "number" then
                                       state.valid_pitch = clamp(pitch, -89, 89)
                                     end
@@ -8142,6 +9757,8 @@ local function selene_main()
                                   jitter.yaw_cache = {}
                                   jitter.sample_count = 0
                                   jitter.difference = 0
+                                  jitter.candidate = false
+                                  jitter.candidate_count = 0
                                 end
                                 jitter.last_simulation_times = {}
                                 resolver_state.defensive = {}
@@ -8161,21 +9778,27 @@ local function selene_main()
                                   local jitter = resolver_state.jitter
                                   local simulation_time = get_prop(player_index, "m_flSimulationTime")
                                   if type(simulation_time) ~= "number" then
-                                    return
+                                    return jitter
                                   end
                                   local last_simulation_time = jitter.last_simulation_times[player_index]
                                   if simulation_time == last_simulation_time then
-                                    return
+                                    return jitter
                                   elseif last_simulation_time ~= nil and (
                                     simulation_time < last_simulation_time
                                     or simulation_time - last_simulation_time > tickinterval() * 4
                                   ) then
-                                    jitter.last_simulation_times[player_index] = nil
+                                    jitter.yaw_cache = {}
+                                    jitter.sample_count = 0
+                                    jitter.jittering = false
+                                    jitter.difference = 0
+                                    jitter.candidate = false
+                                    jitter.candidate_count = 0
+                                    jitter.last_simulation_times = {}
                                   end
                                   jitter.last_simulation_times[player_index] = simulation_time
                                   local _, eye_yaw = get_prop(player_index, "m_angEyeAngles")
                                   if type(eye_yaw) ~= "number" then
-                                    return
+                                    return jitter
                                   end
                                   eye_yaw = normalize_yaw(eye_yaw)
                                   for index = 5, 1, -1 do
@@ -8185,8 +9808,10 @@ local function selene_main()
                                   jitter.sample_count = min(jitter.sample_count + 1, 6)
                                   if jitter.sample_count < 4 then
                                     jitter.jittering = false
+                                    jitter.candidate = false
+                                    jitter.candidate_count = 0
                                     jitter.difference = 0
-                                    return
+                                    return jitter
                                   end
                                   local significant_changes = 0
                                   local direction_changes = 0
@@ -8203,22 +9828,34 @@ local function selene_main()
                                       previous_direction = direction
                                     end
                                   end
-                                  jitter.jittering = significant_changes >= 3 and direction_changes >= 2
+                                  local jitter_candidate = significant_changes >= 3 and direction_changes >= 2
+                                  if jitter_candidate == jitter.candidate then
+                                    jitter.candidate_count = min((jitter.candidate_count or 0) + 1, 2)
+                                  else
+                                    jitter.candidate = jitter_candidate
+                                    jitter.candidate_count = 1
+                                  end
+                                  if jitter.candidate_count >= 2 then
+                                    jitter.jittering = jitter_candidate
+                                  end
                                   local older_sin = sin(degrees_to_radians(jitter.yaw_cache[2])) + sin(degrees_to_radians(jitter.yaw_cache[3]))
                                   local older_cos = cos(degrees_to_radians(jitter.yaw_cache[2])) + cos(degrees_to_radians(jitter.yaw_cache[3]))
                                   local average_yaw = normalize_yaw(radians_to_degrees(atan2(older_sin, older_cos)))
                                   jitter.difference = normalize_yaw(eye_yaw - average_yaw)
+                                  return jitter
                                 end
-                                update_resolver_prediction = function(player_index, animation_state)
+                                update_resolver_prediction = function(player_index, animation_state, max_choked_ticks)
                                   local player_state = get_player_resolver_state(player_index)
                                   local desync_scale = calculate_desync_scale(animation_state)
-                                  update_jitter_cache(player_index, desync_scale)
+                                  local jitter = update_jitter_cache(player_index, desync_scale)
                                   local choked_ticks = estimate_choked_ticks(player_index)
                                   local main = player_state.main
-                                  local jitter = resolver_state.jitter
-                                  main.side = jitter.difference > 0 and 1 or jitter.difference < 0 and -1 or 0
-                                  main.mode = jitter.jittering and choked_ticks == 0 and 1 or 0
+                                  max_choked_ticks = type(max_choked_ticks) == "number" and max_choked_ticks or 0
+                                  main.side = jitter ~= nil and jitter.difference > 0 and 1
+                                    or jitter ~= nil and jitter.difference < 0 and -1 or 0
+                                  main.mode = jitter ~= nil and jitter.jittering and choked_ticks <= max_choked_ticks and 1 or 0
                                   main.angles = main.mode ~= 0 and clamp(jitter.difference * desync_scale, -58, 58) or 0
+                                  return choked_ticks, jitter
                                 end
                               end
                               local register_esp_flag = client.register_esp_flag
@@ -8259,8 +9896,13 @@ local function selene_main()
                                     reset_resolver_predictions()
                                     return
                                   end
+                                  if value_12 >= value_6 then
+                                    value_12 = 0
+                                    reset_resolver_predictions(true)
+                                  end
                                   local current_time = curtime()
                                   local current_tick = tickcount()
+                                  local current_tick_interval = tickinterval()
                                   local conditions = resolver.conditions
                                   local value_16 = conditions.get(conditions)
                                   local value_48, value_49, value_42 = ipairs(enemy_players)
@@ -8269,6 +9911,7 @@ local function selene_main()
                                     local value_50 = is_dormant(item_2)
                                     if value_50 then
                                       resolver_debug_enemy_state[value_41] = nil
+                                      resolver_state.defensive[value_41] = nil
                                       local player_state = resolver_state.players[value_41]
                                       if player_state ~= nil then
                                         player_state.main.mode = 0
@@ -8314,9 +9957,9 @@ local function selene_main()
                                                   if automatic_defensive_active then
                                                     value_15 = "Defensive"
                                                   else
-                                                    update_resolver_prediction(value_41, value_38)
-                                                    if resolver_state.jitter.jittering then
-                                                      value_15 = (value_52 == "Air" or value_52 == "Moving" or estimate_choked_ticks(value_41) >= 2)
+                                                    local choked_ticks, jitter = update_resolver_prediction(value_41, value_38)
+                                                    if jitter ~= nil and jitter.jittering then
+                                                      value_15 = (value_52 == "Air" or value_52 == "Moving" or choked_ticks >= 2)
                                                         and "Jitter v2" or "Jitter"
                                                     else
                                                       value_15 = "Wraith Style"
@@ -8376,7 +10019,7 @@ local function selene_main()
                                                 end
                                                 if value_15 == "Jitter v2" then
                                                   if check_simulation_times(value_41) then
-                                                    update_resolver_prediction(value_41, value_38)
+                                                    update_resolver_prediction(value_41, value_38, 6)
                                                   else
                                                     player_resolver_state.main.mode = 0
                                                     player_resolver_state.main.angles = 0
@@ -8394,24 +10037,21 @@ local function selene_main()
                                                 player_resolver_state.main.angles = 0
                                                 local value_55 = captured_argument_2_186[value_41]
                                                 if value_55 == nil then
-                                                  local current = capture_player_snapshot(value_41)
+                                                  local current = capture_player_snapshot(value_41, current_tick, current_time, current_tick_interval)
                                                   local state = { current = current, last_valid_record = current }
                                                   value_55 = state
                                                   captured_argument_2_186[value_41] = state
                                                 else
-                                                  local value_3 = seconds_to_ticks(get_prop(value_41, "m_flSimulationTime"))
+                                                  local value_3 = seconds_to_ticks(get_prop(value_41, "m_flSimulationTime"), current_tick_interval)
                                                   if value_3 ~= value_55.current.simulation_time then
                                                     insert(value_55, 1, value_55.current)
-                                                    local last_valid_record = capture_player_snapshot(value_41)
+                                                    local last_valid_record = capture_player_snapshot(value_41, current_tick, current_time, current_tick_interval)
                                                     if 1 <= value_3 - value_55.current.simulation_time then
                                                       value_55.last_valid_record = last_valid_record
                                                     end
                                                     value_55.current = last_valid_record
-                                                    local value_27 = #value_55
-                                                    for index = value_27, 1, -1 do
-                                                      if 16 < value_27 then
-                                                        remove(value_55, index)
-                                                      end
+                                                    while #value_55 > 16 do
+                                                      remove(value_55, #value_55)
                                                     end
                                                   end
                                                 end
@@ -8442,10 +10082,12 @@ local function selene_main()
                                                           local value_57
                                                           if 0 < value_55.skitterupdate - current_tick then
                                                             if abs(value_2 - value) == 0 then
+                                                              set(value_41, "Force body yaw", false)
                                                               set(value_41, "Force body yaw value", 0)
                                                               break
                                                             end
                                                             value_57 = 0 < side and 59 or -59
+                                                            set(value_41, "Force body yaw", true)
                                                             set(value_41, "Force body yaw value", value_57)
                                                             break
                                                           end
@@ -9714,6 +11356,8 @@ local function selene_main()
                           end
                           do
                             local captured_value_29_270, captured_value_28_271, captured_value_14_272, captured_value_27_273 = value_29, value_28, value_14, value_27
+                            local pixel_desync_progress = 0
+                            local pixel_state_offset = 0
                             value_74 = --[[ F362 ]] function()
                               local local_player_18 = get_local_player()
                               if local_player_18 ~= nil then
@@ -9969,6 +11613,107 @@ local function selene_main()
                                       local value_58 = value_113 + 32
                                       local value_138 = cell_snapshot_037
                                       text(value_58, value_75, 255, 255, 255, 255 * value_7 * value_138, "-", nil, "BODY")
+                                    elseif value_69 == 4 then
+                                      local pixel_title = script_database.name:lower()
+                                      local title_width = measure_text("cb", pixel_title)
+                                      local pixel_alpha = value_72
+                                      local item_definition = player_weapon_3 ~= nil and get_prop(player_weapon_3, "m_iItemDefinitionIndex") or nil
+                                      local is_grenade = item_definition ~= nil and item_definition >= 43 and item_definition <= 48
+                                      if is_grenade then
+                                        pixel_alpha = pixel_alpha * (40 / 255)
+                                      end
+                                      local pixel_stack_y = value_115
+                                      local pixel_center_x = x
+                                      text(pixel_center_x + title_width / 2 + 2, pixel_stack_y, cell_snapshot_030, value_68, value_71, pixel_alpha, "cb", 0, pixel_title)
+
+                                      local body_yaw = captured_antiaim_funcs_087.get_body_yaw(1)
+                                      local abs_yaw = captured_antiaim_funcs_087.get_abs_yaw()
+                                      local desync = 0
+                                      if body_yaw ~= nil and abs_yaw ~= nil then
+                                        desync = min(abs(normalize_yaw(body_yaw - abs_yaw)) / 58, 1)
+                                      end
+                                      pixel_desync_progress = pixel_desync_progress + (desync - pixel_desync_progress) * min(frametime() * 12, 1)
+                                      local bar_width = max(1, title_width - 2)
+                                      local bar_x = pixel_center_x + 3
+                                      local bar_y = pixel_stack_y + 8
+                                      rectangle(bar_x - 1, bar_y - 1, bar_width + 2, 5, 0, 0, 0, pixel_alpha)
+                                      rectangle(bar_x, bar_y, bar_width, 3, 0, 0, 0, pixel_alpha)
+                                      local fill_width = floor(bar_width * pixel_desync_progress + 0.5)
+                                      if fill_width > 0 then
+                                        renderer.gradient(bar_x, bar_y, fill_width, 3, cell_snapshot_030, value_68, value_71, pixel_alpha, cell_snapshot_030, value_68, value_71, 0, true)
+                                      end
+
+                                      if cell_snapshot_028 then
+                                        local doubletap = captured_value_27_273.doubletap
+                                        local dt_control = doubletap[1]
+                                        local dt_active = dt_control.get(dt_control)
+                                        if dt_active then
+                                          local dt_hotkey = doubletap[2]
+                                          dt_active = dt_hotkey.get(dt_hotkey)
+                                        end
+                                        local on_shot = captured_value_27_273.on_shotantiaim
+                                        local hs_control = on_shot[1]
+                                        local hs_active = hs_control.get(hs_control)
+                                        if hs_active then
+                                          local hs_hotkey = on_shot[2]
+                                          hs_active = hs_hotkey.get(hs_hotkey)
+                                        end
+                                        local body_aim = captured_value_27_273.force_body_aim
+                                        local ba_active = body_aim.get(body_aim)
+                                        local status_y = pixel_stack_y + 18
+                                        local dt_color_r, dt_color_g, dt_color_b = 255, 255, 255
+                                        if dt_active then
+                                          if hs_active then
+                                            dt_color_r, dt_color_g, dt_color_b = 255, 60, 60
+                                          else
+                                            dt_color_r, dt_color_g, dt_color_b = cell_snapshot_030, value_68, value_71
+                                          end
+                                        end
+                                        local dt_alpha = callback_8("crosshair indicators -> pixel DT", dt_active, 100 / 255, 1, 0.0365)
+                                        local dt_width = measure_text("c-", "DT")
+                                        text(pixel_center_x + 5 + (5 - dt_width / 2), status_y, dt_color_r, dt_color_g, dt_color_b, pixel_alpha * dt_alpha, "c-", 0, "DT")
+
+                                        local hs_alpha = callback_8("crosshair indicators -> pixel HS", hs_active, 100 / 255, 1, 0.0365)
+                                        local hs_width = measure_text("c-", "HS")
+                                        text(pixel_center_x + 18 + (5 - hs_width / 2), status_y, 255, 255, 255, pixel_alpha * hs_alpha, "c-", 0, "HS")
+
+                                        local ba_alpha = callback_8("crosshair indicators -> pixel BA", ba_active, 100 / 255, 1, 0.0365)
+                                        local ba_width = measure_text("c-", "BA")
+                                        text(pixel_center_x + 31 + (5 - ba_width / 2), status_y, 255, 255, 255, pixel_alpha * ba_alpha, "c-", 0, "BA")
+                                      end
+
+                                      if cell_snapshot_026 then
+                                        local fake_side = cell_snapshot_040 and "L" or "R"
+                                        local fake_width = measure_text("-", "FAKE")
+                                        local side_y = pixel_stack_y + 28
+                                        text(pixel_center_x + fake_width / 2 + 1, side_y, 255, 255, 255, pixel_alpha, "c-", 0, "FAKE")
+                                        text(pixel_center_x + fake_width + 5, side_y, cell_snapshot_030, value_68, value_71, pixel_alpha, "c-", 0, fake_side)
+                                      end
+
+                                      local flags = get_prop(local_player_18, "m_fFlags")
+                                      local duck_amount = get_prop(local_player_18, "m_flDuckAmount") or 0
+                                      local velocity_x, velocity_y = get_prop(local_player_18, "m_vecVelocity")
+                                      local state_text = "UNKNOWN"
+                                      if duck_amount > 0 and duck_amount < 0.9 then
+                                        state_text = "FAKE DUCK"
+                                      elseif flags ~= nil and bit.band(flags, 1) == 0 then
+                                        state_text = duck_amount == 1 and "CROUCH-AIR" or "AIR"
+                                      elseif duck_amount == 1 then
+                                        state_text = "CROUCHING"
+                                      elseif velocity_x ~= nil and velocity_y ~= nil then
+                                        local speed = math.sqrt(velocity_x * velocity_x + velocity_y * velocity_y)
+                                        if speed > 60 and speed < 70 then
+                                          state_text = "SLOWWALK"
+                                        elseif speed >= 2 then
+                                          state_text = "MOVING"
+                                        else
+                                          state_text = "STANDING"
+                                        end
+                                      end
+                                      local state_width = measure_text("c-", state_text)
+                                      local state_target_offset = state_width / 2 + 1
+                                      pixel_state_offset = pixel_state_offset + (state_target_offset - pixel_state_offset) * min(frametime() * 12, 1)
+                                      text(pixel_center_x + floor(pixel_state_offset + 0.5), pixel_stack_y + 38, 255, 255, 255, pixel_alpha, "c-", 0, state_text)
                                     end
                                   end
                                   return
@@ -10497,118 +12242,8 @@ local function selene_main()
                             value_7 = "aim_hit"
                             value_3 = value_6
                             client_set_event_callback("aim_hit", value_6)
-                            local callback_12, value_42, callback_3
-                            do
-                              local callback_13
-                              do
-                                local enabled_2
-                                do
-                                  local callback_21, value_43, value_44
-                                  do
-                                    local color_3
-                                    do
-                                      local zeus_warning
-                                      do
-                                        local callback_14
-                                        callback_14, zeus_warning, enabled_2, color_3, value_43, value_41, value_44, callback_21, callback_13, callback_3, callback_12, value_42, scratch_value_054, scratch_value_055, scratch_value_053, scratch_value_056 = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, value_4, value_5, client_set_event_callback, value_3
-                                        -- F335
-                                        function callback_14(argument, argument_2, argument_3)
-                                          local value_2 = argument_2 - argument
-                                          local value = argument_3 - argument
-                                          local value_3 = (value.dot(value, value_2)) / (value_2.lengthsqr(value_2))
-                                          if value_3 < 0 then
-                                            value_3 = 0
-                                          elseif 1 < value_3 then
-                                            value_3 = 1
-                                          end
-                                          return argument + value_2 * value_3
-                                        end
-                                      end
-                                      zeus_warning = callback_4.zeus_warning
-                                      enabled_2 = zeus_warning.enabled
-                                      color_3 = zeus_warning.color
-                                    end
-                                    value_43 = nil
-                                    value_41 = nil
-                                    value_44 = nil
-                                    callback_13 = color_3
-                                    callback_21 = color_3.callback
-                                  end
-                                  -- F337
-                                  function callback_3(self)
-                                    local value, value_2, value_3 = self.get(self)
-                                    value_44 = value_3
-                                    value_41 = value_2
-                                    value_43 = value
-                                    return
-                                  end
-                                  callback_21(callback_13, callback_3)
-                                  callback_21 = nil
-                                  -- F343
-                                  function callback_12(argument, argument_2)
-                                    if argument then
-                                      if not (argument_2.status ~= 200) then
-                                        callback_21 = captured_images_090.load_png(argument_2.body)
-                                        return
-                                      end
-                                    end
-                                    return
-                                  end
-                                  captured_http_089.get("https://northon.dev/neverlose/selene/zeus.png", callback_12)
-                                  -- F345
-                                  function callback_13()
-                                    if callback_21 == nil then
-                                      return
-                                    end
-                                    local local_player_22 = get_local_player()
-                                    if local_player_22 ~= nil then
-                                      if (is_alive(local_player_22)) then
-                                        local value_3 = vector(get_origin(local_player_22))
-                                        local value_9 = sin(abs(-pi + curtime() * 1.5 % 6)) * 255
-                                        local value_10, value_11, value_7 = ipairs((get_players(true)))
-                                        for item, item_2 in truthy_iterator(value_10, value_11, value_7) do
-                                          local value_6 = item_2
-                                          if (is_alive(item_2)) then
-                                            local player_weapon_4 = get_player_weapon(value_6)
-                                            if player_weapon_4 ~= nil then
-                                              if get_prop(player_weapon_4, "m_iItemDefinitionIndex") == 31 then
-                                                local value_12 = vector(get_origin(value_6))
-                                                if (value_3.dist(value_3, value_12)) <= 800 then
-                                                  local value, value_13, value_14, value_15, value_16 = get_bounding_box(value_6)
-                                                  if value ~= nil then
-                                                    if value_13 ~= nil then
-                                                      if value_14 ~= nil then
-                                                        local value_5 = value + (value_14 - value) * 0.5
-                                                        local value_4 = callback_21
-                                                        value_4.draw(value_4, value_5 - 24, value_13 - 50, 48, 48, value_43, value_41, value_44, 255)
-                                                      end
-                                                    end
-                                                  end
-                                                end
-                                              end
-                                            end
-                                          end
-                                        end
-                                        return
-                                      end
-                                    end
-                                    return
-                                  end
-                                end
-                                callback_12 = enabled_2
-                                callback_3 = enabled_2.callback
-                              end
-                              do
-                                local captured_callback_13_293 = callback_13
-                                value_42 = --[[ F346 ]] function(self)
-                                  (self.get(self) and client.set_event_callback or client.unset_event_callback)("paint", captured_callback_13_293)
-                                  return
-                                end
-                              end
-                            end
-                            callback_3(callback_12, value_42, true)
                           end
-                          local value_30
+                          local value_30, force_text
                           do
                             local color_2
                             do
@@ -10628,6 +12263,7 @@ local function selene_main()
                                           local callback_11
                                           callback_11 = callback_4.watermark
                                           value_30 = callback_11
+                                          force_text = callback_11.force_text
                                           callback_11 = nil
                                           -- F348
                                           function callback_11(argument, argument_2, argument_3)
@@ -10689,7 +12325,7 @@ local function selene_main()
                                         callback_20 = style_2.callback
                                         -- F332
                                         function callback_6(self)
-                                          local value = self.get(self)
+                                          local value = style_2.get(style_2)
                                           value_32 = value == "FamilyHook"
                                           value_40 = value == "Simple"
                                           value_41 = value == "New"
@@ -10697,6 +12333,7 @@ local function selene_main()
                                         end
                                         value_37 = true
                                         callback_20(value_35, callback_6, value_37)
+                                        force_text.callback(force_text, callback_6, true)
                                         callback_20 = nil
                                         value_35 = nil
                                         callback_6 = nil
@@ -10749,42 +12386,8 @@ local function selene_main()
                                       value_15 = callback_9
                                     end
 
-                                    local selene_new_icons = {
-                                      version = renderer.load_svg([[
-                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                          <path d="M18 16L22 12L18 8M6 8L2 12L6 16M14.5 4L9.5 20" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                      ]], 12, 12),
-                                      username = renderer.load_svg([[
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
-                                          <path d="M12 13C14.7614 13 17 10.7614 17 8C17 5.23858 14.7614 3 12 3C9.23858 3 7 5.23858 7 8C7 10.7614 9.23858 13 12 13Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                          <path d="M20 21C20 18.8783 19.1571 16.8434 17.6569 15.3431C16.1566 13.8429 14.1217 13 12 13C9.87827 13 7.84344 13.8429 6.34315 15.3431C4.84285 16.8434 4 18.8783 4 21" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                      ]], 12, 12),
-                                      latency = renderer.load_svg([[
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
-                                          <path d="M13.5 6.5L10.352 3.352C10.126 3.126 9.82 2.999 9.5 2.999C9.18 2.999 8.874 3.126 8.648 3.352L6.352 5.648C6.126 5.874 5.999 6.18 5.999 6.5C5.999 6.82 6.126 7.126 6.352 7.352L9.5 10.5M16.5 7.5L19 5M17.5 10.5L20.648 13.648C20.874 13.874 21.001 14.18 21.001 14.5C21.001 14.82 20.874 15.126 20.648 15.352L18.352 17.648C18.126 17.874 17.82 18.001 17.5 18.001C17.18 18.001 16.874 17.874 16.648 17.648L13.5 14.5M9 21C9 19.409 8.368 17.883 7.243 16.757C6.117 15.632 4.591 15 3 15M9.352 10.648C9.126 10.874 8.999 11.18 8.999 11.5C8.999 11.82 9.126 12.126 9.352 12.352L11.648 14.648C11.874 14.874 12.18 15.001 12.5 15.001C12.82 15.001 13.126 14.874 13.352 14.648L17.648 10.352C17.874 10.126 18.001 9.82 18.001 9.5C18.001 9.18 17.874 8.874 17.648 8.648L15.352 6.352C15.126 6.126 14.82 5.999 14.5 5.999C14.18 5.999 13.874 6.126 13.648 6.352L9.352 10.648" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                      ]], 12, 12),
-                                      server = renderer.load_svg([[
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
-                                          <path d="M12 8C16.971 8 21 6.657 21 5C21 3.343 16.971 2 12 2C7.029 2 3 3.343 3 5C3 6.657 7.029 8 12 8ZM3 5V19C3 19.796 3.948 20.559 5.636 21.121C7.324 21.684 9.613 22 12 22C14.387 22 16.676 21.684 18.364 21.121C20.052 20.559 21 19.796 21 19V5M3 12C3 12.796 3.948 13.559 5.636 14.121C7.324 14.684 9.613 15 12 15C14.387 15 16.676 14.684 18.364 14.121C20.052 13.559 21 12.796 21 12" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                      ]], 12, 12),
-                                      frames = renderer.load_svg([[
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
-                                          <path d="M2 7V17M6 5V19M20 3H12C10.895 3 10 3.895 10 5V19C10 20.105 10.895 21 12 21H20C21.105 21 22 20.105 22 19V5C22 3.895 21.105 3 20 3Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                      ]], 12, 12),
-                                      time = renderer.load_svg([[
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
-                                          <path d="M12 22C17.523 22 22 17.523 22 12C22 6.477 17.523 2 12 2C6.477 2 2 6.477 2 12C2 17.523 6.477 22 12 22Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                          <path d="M12 6V12L16 14" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                      ]], 12, 12)
-                                    }
                                     local selene_new_last_fps_update, selene_new_cached_fps = 0, 0
-                                    local selene_new_watermark_width, selene_new_items_alpha = 0, 0
+                                    local selene_new_watermark_width = 0
                                     local selene_new_watermark_alpha = 0
 
                                     do
@@ -10793,22 +12396,31 @@ local function selene_main()
                                         if value_41 then
                                           local screen_w, screen_h = client.screen_size()
                                           local accent_r, accent_g, accent_b = callback_20, value_35, callback_6
+                                          local _, font_height = measure_text("bd", "a")
+                                          font_height = font_height or 12
+                                          local scale = math.max(1, (font_height or 12) / 12)
+                                          local pad_x = math.floor(13 * scale + 0.5)
+                                          local pad_y = math.floor(8 * scale + 0.5)
+                                          local element_gap = math.floor(12 * scale + 0.5)
+                                          local icon_gap = math.floor(5 * scale + 0.5)
                                           local rows = {}
                                           local function add_row(icon, label)
-                                            local width = measure_text("", label)
-                                            rows[#rows + 1] = { icon = icon, text = label, width = width }
+                                            local width, height = measure_text("bd", label)
+                                            local icon_size = math.max(15 * scale, (height or font_height or 12) + 3 * scale)
+                                            rows[#rows + 1] = {
+                                              icon = icon,
+                                              text = label,
+                                              width = width,
+                                              icon_size = icon_size
+                                            }
                                           end
 
-                                          add_row(selene_new_icons.version, tostring(script_build))
-                                          local username = get_loader_username()
-                                          add_row(selene_new_icons.username, tostring(username))
-
-                                          local ping = latency()
-                                          if ping ~= nil and ping > 0 then
-                                            add_row(selene_new_icons.latency, format("%ims", floor(ping * 1000)))
-                                          else
-                                            add_row(selene_new_icons.server, "local")
+                                          local brand = tostring(script_database.name or "selene")
+                                          local build = tostring(script_build or "")
+                                          if build ~= "" then
+                                            brand = brand .. " " .. build
                                           end
+                                          local brand_w = measure_text("bd", brand)
 
                                           local now = realtime()
                                           local frame_time = absoluteframetime()
@@ -10817,91 +12429,116 @@ local function selene_main()
                                             selene_new_last_fps_update = now
                                           end
                                           if selene_new_cached_fps > 0 then
-                                            add_row(selene_new_icons.frames, format("%ifps", selene_new_cached_fps))
+                                            add_row("frames", format("%d FPS", selene_new_cached_fps))
+                                          end
+
+                                          local ping = latency()
+                                          if ping ~= nil and ping > 0 then
+                                            add_row("latency", format("%d MS", floor(ping * 1000 + 0.5)))
+                                          else
+                                            add_row("server", "local")
                                           end
 
                                           local hour, minute = system_time()
-                                          add_row(selene_new_icons.time, format("%02d:%02d", hour, minute))
+                                          local meridiem = hour >= 12 and "PM" or "AM"
+                                          hour = hour % 12
+                                          if hour == 0 then hour = 12 end
+                                          add_row("time", format("%d:%02d %s", hour, minute, meridiem))
 
-                                          local brand = "selene"
-                                          local brand_w = measure_text("", brand)
-                                          local items_w = 0
+                                          local username = get_loader_username()
+                                          add_row("username", tostring(username or ""))
+
+                                          local items_w = brand_w
                                           for i = 1, #rows do
-                                            items_w = items_w + 12 + 5 + rows[i].width
-                                            if i > 1 then items_w = items_w + 10 end
+                                            items_w = items_w + element_gap + rows[i].icon_size + icon_gap + rows[i].width
                                           end
 
-                                          local frame_delta = frametime()
-                                          local step = 0.15
-                                          selene_new_watermark_width = selene_new_watermark_width
-                                            + (items_w - selene_new_watermark_width) * step
-                                          selene_new_items_alpha = selene_new_items_alpha
-                                            + (1 - selene_new_items_alpha) * step
+                                          local frame_delta = math.max(0, frametime() or 0)
+                                          local step = math.min(1, frame_delta * 12)
+                                          if selene_new_watermark_width <= 0 then
+                                            selene_new_watermark_width = items_w
+                                          else
+                                            selene_new_watermark_width = selene_new_watermark_width
+                                              + (items_w - selene_new_watermark_width) * step
+                                          end
                                           selene_new_watermark_alpha = selene_new_watermark_alpha
                                             + (1 - selene_new_watermark_alpha) * step
 
-                                          local radius = 12
-                                          local total_w = selene_new_watermark_width + brand_w
-                                            + radius * 2 * (1 + selene_new_items_alpha)
-                                            + 5 * selene_new_items_alpha
+                                          local total_w = selene_new_watermark_width + pad_x * 2
+                                          local panel_h = math.max(27 * scale, font_height + pad_y * 2)
+                                          local radius = math.min(math.floor(6 * scale + 0.5), math.floor(panel_h / 2))
                                           local px, py = screen_w - total_w - 10, 10
                                           if callback_19 == "Bottom Center" then
-                                            px, py = screen_w * 0.5 - total_w * 0.5, screen_h - 44 * selene_new_watermark_alpha
+                                            px, py = screen_w * 0.5 - total_w * 0.5, screen_h - panel_h - 10
                                           end
 
                                           local alpha = selene_new_watermark_alpha
-                                          local function panel(x, width)
-                                            -- Selene rounded fill (radius 12), ported to Outlaw's renderer API.
-                                            rectangle(x + radius, py, width - radius * 2, 24, 150, 150, 150, 40 * alpha)
-                                            rectangle(x, py + radius, radius, 24 - radius * 2, 150, 150, 150, 40 * alpha)
-                                            rectangle(x + width - radius, py + radius, radius, 24 - radius * 2, 150, 150, 150, 40 * alpha)
-                                            renderer.circle(x + radius, py + radius, 150, 150, 150, 40 * alpha, radius, 180, 0.25)
-                                            renderer.circle(x + radius, py + 24 - radius, 150, 150, 150, 40 * alpha, radius, 270, 0.25)
-                                            renderer.circle(x + width - radius, py + radius, 150, 150, 150, 40 * alpha, radius, 90, 0.25)
-                                            renderer.circle(x + width - radius, py + 24 - radius, 150, 150, 150, 40 * alpha, radius, 0, 0.25)
-                                            -- Selene one-pixel rounded outline.
-                                            renderer.circle_outline(x + 1, py + 1, 200, 200, 200, 20 * alpha, 12, 180, 0.25, 1)
-                                            renderer.circle_outline(x + 1, py + 23, 200, 200, 200, 20 * alpha, 12, 90, 0.25, 1)
-                                            renderer.circle_outline(x + width - 1, py + 1, 200, 200, 200, 20 * alpha, 12, 270, 0.25, 1)
-                                            renderer.circle_outline(x + width - 1, py + 23, 200, 200, 200, 20 * alpha, 12, 0, 0.25, 1)
-                                            rectangle(x, py + radius, 1, 24 - radius * 2, 200, 200, 200, 20 * alpha)
-                                            rectangle(x + width - 1, py + radius, 1, 24 - radius * 2, 200, 200, 200, 20 * alpha)
-                                            rectangle(x + radius, py, width - radius * 2, 1, 200, 200, 200, 20 * alpha)
-                                            rectangle(x + radius, py + 23, width - radius * 2, 1, 200, 200, 200, 20 * alpha)
-                                          end
+                                          rectangle(px + radius, py, total_w - radius * 2, panel_h, 16, 16, 16, 190 * alpha)
+                                          rectangle(px, py + radius, radius, panel_h - radius * 2, 16, 16, 16, 190 * alpha)
+                                          rectangle(px + total_w - radius, py + radius, radius, panel_h - radius * 2, 16, 16, 16, 190 * alpha)
+                                          renderer.circle(px + radius, py + radius, 16, 16, 16, 190 * alpha, radius, 180, 0.25)
+                                          renderer.circle(px + radius, py + panel_h - radius, 16, 16, 16, 190 * alpha, radius, 270, 0.25)
+                                          renderer.circle(px + total_w - radius, py + radius, 16, 16, 16, 190 * alpha, radius, 90, 0.25)
+                                          renderer.circle(px + total_w - radius, py + panel_h - radius, 16, 16, 16, 190 * alpha, radius, 0, 0.25)
+                                          renderer.circle_outline(px + radius, py + radius, 200, 200, 200, 20 * alpha, radius, 180, 0.25, 1)
+                                          renderer.circle_outline(px + radius, py + panel_h - radius, 200, 200, 200, 20 * alpha, radius, 90, 0.25, 1)
+                                          renderer.circle_outline(px + total_w - radius, py + radius, 200, 200, 200, 20 * alpha, radius, 270, 0.25, 1)
+                                          renderer.circle_outline(px + total_w - radius, py + panel_h - radius, 200, 200, 200, 20 * alpha, radius, 0, 0.25, 1)
+                                          rectangle(px, py + radius, 1, panel_h - radius * 2, 200, 200, 200, 20 * alpha)
+                                          rectangle(px + total_w - 1, py + radius, 1, panel_h - radius * 2, 200, 200, 200, 20 * alpha)
+                                          rectangle(px + radius, py, total_w - radius * 2, 1, 200, 200, 200, 20 * alpha)
+                                          rectangle(px + radius, py + panel_h - 1, total_w - radius * 2, 1, 200, 200, 200, 20 * alpha)
 
-                                          local brand_panel_w = brand_w + radius * 2
-                                          panel(px, brand_panel_w)
-                                          renderer.gradient(px + radius, py + 17, brand_w, 1,
-                                            accent_r, accent_g, accent_b, 255 * alpha,
-                                            accent_r, accent_g, accent_b, 50 * alpha, true)
                                           local brand_gradient = captured_value_15_297(
                                             { accent_r, accent_g, accent_b, 255 * alpha },
                                             { accent_r, accent_g, accent_b, 50 * alpha },
                                             brand
                                           )
-                                          text(px + radius, py + 6, 255, 255, 255, 255 * alpha, "", nil, brand_gradient)
-
-                                          local items_x = px + brand_panel_w + 5
-                                          local items_panel_w = selene_new_watermark_width + radius * 2
-                                          if #rows > 0 then
-                                            panel(items_x, items_panel_w)
-                                            renderer.gradient(items_x + radius, py + 1,
-                                              math.max(0, items_panel_w - radius * 2), 1,
-                                              accent_r, accent_g, accent_b, 0,
-                                              accent_r, accent_g, accent_b, 50 * alpha, true)
-                                            local item_x = items_x + radius
-                                            for i = 1, #rows do
-                                              local item = rows[i]
-                                              if i > 1 then item_x = item_x + 10 end
-                                              if item.icon ~= nil then
-                                                renderer.texture(item.icon, item_x, py + 6, 12, 12,
-                                                  accent_r, accent_g, accent_b, 255 * alpha)
-                                                item_x = item_x + 17
+                                          local text_y = py + math.floor((panel_h - font_height) / 2 + 0.5)
+                                          local item_x = px + pad_x
+                                          text(item_x, text_y, 255, 255, 255, 255 * alpha, "bd", nil, brand_gradient)
+                                          item_x = item_x + brand_w
+                                          for i = 1, #rows do
+                                            local item = rows[i]
+                                            item_x = item_x + element_gap
+                                            local icon_y = py + math.floor((panel_h - item.icon_size) / 2 + 0.5)
+                                            if item.icon ~= nil then
+                                              local unit = item.icon_size / 18
+                                              local icon_alpha = 255 * alpha
+                                              local icon_center = item_x + item.icon_size / 2
+                                              if item.icon == "frames" then
+                                                local base_y = icon_y + 15 * unit
+                                                rectangle(item_x + 3 * unit, base_y - 4 * unit, 2.4 * unit, 4 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                rectangle(item_x + 7.1 * unit, base_y - 12 * unit, 2.4 * unit, 12 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                rectangle(item_x + 11.2 * unit, base_y - 10 * unit, 2.4 * unit, 10 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                              elseif item.icon == "latency" then
+                                                local base_y = icon_y + 15 * unit
+                                                rectangle(item_x + 3 * unit, base_y - 3 * unit, 2 * unit, 3 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                rectangle(item_x + 6.5 * unit, base_y - 6 * unit, 2 * unit, 6 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                rectangle(item_x + 10 * unit, base_y - 9 * unit, 2 * unit, 9 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                rectangle(item_x + 13.5 * unit, base_y - 12 * unit, 2 * unit, 12 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                              elseif item.icon == "server" then
+                                                for row = 0, 2 do
+                                                  local row_y = icon_y + (4 + row * 4) * unit
+                                                  rectangle(item_x + 3 * unit, row_y, 2 * unit, 1.5 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                  rectangle(item_x + 7 * unit, row_y, 7 * unit, 1.5 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                end
+                                              elseif item.icon == "time" then
+                                                local icon_center_y = icon_y + item.icon_size / 2
+                                                renderer.circle_outline(icon_center, icon_center_y, accent_r, accent_g, accent_b, icon_alpha, 6 * unit, 0, 1, 1.5 * unit)
+                                                renderer.line(icon_center, icon_y + 5.5 * unit, icon_center, icon_center_y, accent_r, accent_g, accent_b, icon_alpha)
+                                                renderer.line(icon_center, icon_center_y, icon_center + 2.7 * unit, icon_y + 10.8 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                              elseif item.icon == "username" then
+                                                renderer.circle(icon_center, icon_y + 6 * unit, accent_r, accent_g, accent_b, icon_alpha, 2.5 * unit, 0, 1)
+                                                renderer.line(item_x + 3.7 * unit, icon_y + 15 * unit, item_x + 4.5 * unit, icon_y + 12.8 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                renderer.line(item_x + 4.5 * unit, icon_y + 12.8 * unit, icon_center, icon_y + 11.4 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                renderer.line(icon_center, icon_y + 11.4 * unit, item_x + 13.5 * unit, icon_y + 12.8 * unit, accent_r, accent_g, accent_b, icon_alpha)
+                                                renderer.line(item_x + 13.5 * unit, icon_y + 12.8 * unit, item_x + 14.3 * unit, icon_y + 15 * unit, accent_r, accent_g, accent_b, icon_alpha)
                                               end
-                                              text(item_x, py + 5, 255, 255, 255, 255 * alpha, "", nil, item.text)
-                                              item_x = item_x + item.width
+                                              item_x = item_x + item.icon_size + icon_gap
                                             end
+                                            text(item_x, text_y, 255, 255, 255, 255 * alpha, "bd", nil, item.text)
+                                            item_x = item_x + item.width
                                           end
 elseif value_40 then
                                           local x = position.x
@@ -10966,10 +12603,59 @@ elseif value_40 then
                                       end
                                     end
                                   end
+                                  local force_text_alpha = 0
+                                  local force_text_paint_active = false
+                                  local function force_text_paint()
+                                    local target_alpha = force_text.get(force_text) == 1 and 255 or 0
+                                    force_text_alpha = force_text_alpha
+                                      + (target_alpha - force_text_alpha) * math.min(frametime() * 12, 1)
+
+                                    if force_text_alpha > 0 then
+                                      local _, screen_height = client.screen_size()
+                                      local _, font_height = measure_text("bd", "a")
+                                      local scale = math.max(1, (font_height or 12) / 12)
+                                      local alpha = math.floor(force_text_alpha + 0.5)
+                                      local accent_r, accent_g, accent_b = color_2.get(color_2)
+                                      local accent_hex = format(
+                                        "%02X%02X%02X%02X",
+                                        accent_r or 175,
+                                        accent_g or 175,
+                                        accent_b or 255,
+                                        alpha
+                                      )
+                                      local white_hex = format("FFFFFF%02X", alpha)
+                                      local username = get_loader_username()
+                                      local watermark_text = format(
+                                        "\a%s%s %s \a%s/ %s",
+                                        accent_hex,
+                                        script_database.name,
+                                        script_build,
+                                        white_hex,
+                                        username
+                                      )
+                                      local x = math.floor(20 * scale + 0.5)
+                                      local y = math.floor(screen_height / 2 + 11 * scale + 0.5)
+                                      text(x, y, 255, 255, 255, alpha, "bd", 0, watermark_text)
+                                    end
+
+                                    if target_alpha == 0 and force_text_alpha < 1 and force_text_paint_active then
+                                      force_text_alpha = 0
+                                      force_text_paint_active = false
+                                      client.unset_event_callback("paint", force_text_paint)
+                                    end
+                                  end
+                                  local function update_force_text_paint()
+                                    if force_text.get(force_text) == 1 and not force_text_paint_active then
+                                      force_text_paint_active = true
+                                      client.set_event_callback("paint", force_text_paint)
+                                    end
+                                  end
                                   do
                                     local captured_value_75_295, captured_value_31_296 = value_75, value_31
                                     value_76 = --[[ F357 ]] function(argument_3)
-                                      (not value_32 and client.set_event_callback or client.unset_event_callback)("paint", captured_value_75_295)
+                                      update_force_text_paint()
+                                      local update_watermark_callback = not value_32 and client.set_event_callback or client.unset_event_callback
+                                      update_watermark_callback("paint", captured_value_75_295)
                                       if not value_32 then
                                         return captured_value_31_296.delete()
                                       end
@@ -10988,12 +12674,17 @@ elseif value_40 then
                                 end
                                 do
                                   on_shutdown_4 = --[[ F358 ]] function()
+                                    if force_text_paint_active then
+                                      client.unset_event_callback("paint", force_text_paint)
+                                      force_text_paint_active = false
+                                    end
                                     value_31.delete()
                                     return
                                   end
                                 end
                               end
                               style_2.callback(style_2, value_76, true)
+                              force_text.callback(force_text, value_76, true)
                             end
                             color_2.callback(color_2, value_76, true)
                           end
@@ -11005,6 +12696,7 @@ elseif value_40 then
                       end)()
                       return
                     end
+                  end
                   end
                   callback_6(0.05, callback_3)
                   callback_6 = callback_4.panorama_indicators
@@ -11414,6 +13106,317 @@ elseif value_40 then
                           end)(features_2, value_49, value_48)), true)
                         end
                         do
+                          local chat_module
+                          local chat_loaded, chat_result = pcall(require, "gamesense/chat")
+                          if chat_loaded then
+                            chat_module = chat_result
+                          end
+
+                          local printed = {}
+
+                          local function enemy_chat_enabled()
+                            return value_11(features_2.get(features_2), "Reveal enemy team chat")
+                          end
+
+                          local function is_chat_muted(ent)
+                            local mute_enemy = cvar.cl_mute_enemy_team
+                            local mute_all = cvar.cl_mute_all_but_friends_and_party
+                            if mute_enemy and mute_enemy.get_int(mute_enemy) == 1 then
+                              return true
+                            end
+                            if mute_all and mute_all.get_int(mute_all) == 1 then
+                              return true
+                            end
+
+                            local ok, game_state = pcall(panorama.open)
+                            if ok and game_state and game_state.GameStateAPI then
+                              local api = game_state.GameStateAPI
+                              local xuid_ok, xuid = pcall(api.GetPlayerXuidStringFromEntIndex, ent)
+                              if xuid_ok then
+                                local mute_ok, muted = pcall(api.IsSelectedPlayerMuted, xuid)
+                                if mute_ok and muted == true then
+                                  return true
+                                end
+                              end
+                            end
+                            return false
+                          end
+
+                          local function print_enemy_chat(ent, text)
+                            if printed[ent] ~= nil
+                              and math.abs(globals.realtime() - printed[ent]) < 0.4 then
+                              return
+                            end
+
+                            local place = entity.get_prop(ent, "m_szLastPlaceName")
+                            local player_resource = entity.get_player_resource()
+                            local team = entity.get_prop(player_resource, "m_iTeam", ent) == 2 and "T" or "CT"
+                            local state = entity.is_alive(ent) and "Loc" or "Dead"
+                            local key = string.format("Cstrike_Chat_%s_%s", team, state)
+                            local player_name = entity.get_player_name(ent)
+
+                            local message
+                            local localized_ok, localized = pcall(localize, key, {
+                              s1 = player_name,
+                              s2 = text,
+                              s3 = localize(type(place) == "string" and place ~= "" and place or "UI_Unknown")
+                            })
+                            if localized_ok then
+                              message = localized
+                            else
+                              message = string.format("[%s] %s: %s", team, player_name, text)
+                            end
+
+                            if chat_module and type(chat_module.print_player) == "function" then
+                              pcall(chat_module.print_player, ent, message)
+                            elseif client and client.color_log then
+                              client.color_log(255, 255, 255, message .. "\n")
+                            end
+                          end
+
+                          local function on_player_chat(event)
+                            if event.entity ~= nil and entity.is_enemy(event.entity) then
+                              printed[event.entity] = globals.realtime()
+                            end
+                          end
+
+                          local function on_player_say(event)
+                            if not enemy_chat_enabled() then
+                              return
+                            end
+
+                            local ent = client.userid_to_entindex(event.userid)
+                            if ent ~= nil and ent ~= 0
+                              and entity.is_enemy(ent)
+                              and not is_chat_muted(ent) then
+                              client.delay_call(0.2, print_enemy_chat, ent, event.text)
+                            end
+                          end
+
+                          local enemy_chat_callbacks = false
+                          local function update_enemy_chat_callbacks()
+                            local enabled = enemy_chat_enabled()
+                            if enabled == enemy_chat_callbacks then
+                              return
+                            end
+
+                            local set_event_callback = enabled
+                              and client.set_event_callback
+                              or client.unset_event_callback
+                            set_event_callback("player_say", on_player_say)
+                            set_event_callback("player_chat", on_player_chat)
+                            enemy_chat_callbacks = enabled
+                          end
+
+                          features_2.callback(features_2, update_enemy_chat_callbacks, true)
+                          client.set_event_callback("shutdown", function()
+                            if enemy_chat_callbacks then
+                              client.unset_event_callback("player_say", on_player_say)
+                              client.unset_event_callback("player_chat", on_player_chat)
+                              enemy_chat_callbacks = false
+                            end
+                          end)
+                        end
+                        do
+                          local fps_controls = callback_4.fps_optimize
+                          local fps_originals = {}
+                          local fps_tree = {
+                            Decals = {
+                              { convar = cvar.r_decals, value = 0 },
+                              { convar = cvar.r_drawbatchdecals, value = 0 },
+                              { convar = cvar.r_drawmodeldecals, value = 0 }
+                            },
+                            ["Blood and gibs"] = {
+                              { convar = cvar.violence_ablood, value = 0 },
+                              { convar = cvar.violence_hblood, value = 0 },
+                              { convar = cvar.violence_agibs, value = 0 },
+                              { convar = cvar.violence_hgibs, value = 0 }
+                            },
+                            Tracers = {
+                              { convar = cvar.muzzleflash_light, value = 0 },
+                              { convar = cvar.r_drawtracers_firstperson, value = 0 }
+                            },
+                            ["Breakable debris"] = {
+                              { convar = cvar.func_break_max_pieces, value = 0 },
+                              { convar = cvar.props_break_max_pieces, value = 0 }
+                            },
+                            ["3D sky"] = {
+                              { convar = cvar.r_3dsky, value = 0 }
+                            },
+                            Ropes = {
+                              { convar = cvar.rope_collide, value = 0 },
+                              { convar = cvar.rope_smooth, value = 0 },
+                              { convar = cvar.rope_subdiv, value = 0 },
+                              { convar = cvar.rope_wind_dist, value = 0 },
+                              { convar = cvar.r_drawropes, value = 0 }
+                            },
+                            Shadows = {
+                              { convar = cvar.r_shadows, value = 0 },
+                              { convar = cvar.cl_csm_static_prop_shadows, value = 0 },
+                              { convar = cvar.cl_csm_shadows, value = 0 },
+                              { convar = cvar.cl_csm_world_shadows, value = 0 },
+                              { convar = cvar.cl_foot_contact_shadows, value = 0 },
+                              { convar = cvar.cl_csm_viewmodel_shadows, value = 0 },
+                              { convar = cvar.cl_csm_rope_shadows, value = 0 },
+                              { convar = cvar.cl_csm_sprite_shadows, value = 0 },
+                              { convar = cvar.cl_csm_translucent_shadows, value = 0 },
+                              { convar = cvar.cl_csm_entity_shadows, value = 0 },
+                              { convar = cvar.cl_csm_world_shadows_in_viewmodelcascad, value = 0 }
+                            },
+                            Particles = {
+                              { convar = cvar.r_drawparticles, value = 0 }
+                            },
+                            Sprites = {
+                              { convar = cvar.r_drawsprites, value = 0 }
+                            },
+                            ["Dynamic lights"] = {
+                              { convar = cvar.mat_disable_fancy_blending, value = 1 }
+                            },
+                            ["Weapon effects"] = {
+                              { convar = cvar.muzzleflash_light, value = 0 },
+                              { convar = cvar.r_drawtracers_firstperson, value = 0 }
+                            },
+                            Bloom = {
+                              { convar = cvar.mat_disable_bloom, value = 1 },
+                              { convar = cvar.mat_bloom_scalefactor_scalar, value = 0 }
+                            },
+                            ["Map details"] = {
+                              { convar = cvar.func_break_max_pieces, value = 0 },
+                              { convar = cvar.props_break_max_pieces, value = 0 },
+                              { convar = cvar.cl_detail_avoid_force, value = 0 },
+                              { convar = cvar.cl_detail_avoid_radius, value = 0 },
+                              { convar = cvar.cl_detail_avoid_other, value = 0 }
+                            },
+                            Ragdolls = {
+                              { convar = cvar.cl_ragdoll_limit, value = 0 },
+                              { convar = cvar.cl_ragdoll_physics_enable, value = 0 }
+                            }
+                          }
+
+                          local recommended = {
+                            "Blood and gibs",
+                            "Tracers",
+                            "Breakable debris"
+                          }
+                          local maximum = {
+                            "Blood and gibs",
+                            "Decals",
+                            "Tracers",
+                            "Breakable debris",
+                            "3D sky",
+                            "Ropes",
+                            "Shadows",
+                            "Particles",
+                            "Sprites",
+                            "Dynamic lights",
+                            "Weapon effects",
+                            "Bloom",
+                            "Map details",
+                            "Ragdolls"
+                          }
+
+                          local function fps_optimize_enabled()
+                            return value_11(features_2.get(features_2), "FPS optimize")
+                          end
+
+                          local function restore_fps_convars()
+                            for convar, original in pairs(fps_originals) do
+                              pcall(convar.set_int, convar, original)
+                            end
+                            fps_originals = {}
+                          end
+
+                          local function selected_fps_categories()
+                            local preset = fps_controls.preset.get(fps_controls.preset)
+                            if preset == "Custom" then
+                              local values = fps_controls.list.get(fps_controls.list)
+                              local selected = {}
+                              for i = 1, #values do
+                                selected[values[i]] = true
+                              end
+                              return selected
+                            end
+
+                            local list = preset == "Maximum FPS" and maximum or recommended
+                            local selected = {}
+                            for i = 1, #list do
+                              selected[list[i]] = true
+                            end
+                            return selected
+                          end
+
+                          local function apply_fps_convars()
+                            local selected = selected_fps_categories()
+                            restore_fps_convars()
+
+                            for category, entries in pairs(fps_tree) do
+                              if selected[category] then
+                                for i = 1, #entries do
+                                  local convar = entries[i].convar
+                                  if convar then
+                                    local ok, original = pcall(convar.get_int, convar)
+                                    if ok then
+                                      if fps_originals[convar] == nil then
+                                        fps_originals[convar] = original
+                                      end
+                                      pcall(convar.set_int, convar, entries[i].value)
+                                    end
+                                  end
+                                end
+                              end
+                            end
+                          end
+
+                          local fps_update_registered = false
+                          local fps_applied_signature = nil
+                          local function fps_settings_signature()
+                            local preset = fps_controls.preset.get(fps_controls.preset)
+                            if preset ~= "Custom" then
+                              return preset
+                            end
+
+                            local selected = fps_controls.list.get(fps_controls.list)
+                            local values = {}
+                            for i = 1, #selected do
+                              values[i] = selected[i]
+                            end
+                            table.sort(values)
+                            return preset .. ":" .. table.concat(values, "|")
+                          end
+
+                          local function update_fps_optimize()
+                            local enabled = fps_optimize_enabled()
+                            if enabled == fps_update_registered then
+                              if enabled then
+                                local signature = fps_settings_signature()
+                                if signature ~= fps_applied_signature then
+                                  fps_applied_signature = signature
+                                  apply_fps_convars()
+                                end
+                              else
+                                restore_fps_convars()
+                                fps_applied_signature = nil
+                              end
+                              return
+                            end
+
+                            fps_update_registered = enabled
+                            if enabled then
+                              fps_applied_signature = fps_settings_signature()
+                              apply_fps_convars()
+                              client.set_event_callback("shutdown", restore_fps_convars)
+                            else
+                              restore_fps_convars()
+                              fps_applied_signature = nil
+                              client.unset_event_callback("shutdown", restore_fps_convars)
+                            end
+                          end
+
+                          features_2.callback(features_2, update_fps_optimize, true)
+                          fps_controls.preset.callback(fps_controls.preset, update_fps_optimize, true)
+                          fps_controls.list.callback(fps_controls.list, update_fps_optimize, true)
+                        end
+                        do
                           local value_107, value_108, set_event_callback
                           do
                             local value_109
@@ -11541,7 +13544,7 @@ elseif value_40 then
                                                   kind = "hit",
                                                   segments = {
                                                     { text = "Hit " },
-                                                    { text = "demyaha", color = "accent" },
+                                                    { text = "svnhvh", color = "accent" },
                                                     { text = " in the " },
                                                     { text = "head", color = "accent" },
                                                     { text = " for " },
@@ -11556,7 +13559,7 @@ elseif value_40 then
                                                   kind = "hit",
                                                   segments = {
                                                     { text = "Hit " },
-                                                    { text = "lordmouse", color = "accent" },
+                                                    { text = "svnhvh", color = "accent" },
                                                     { text = " in the " },
                                                     { text = "neck", color = "accent" },
                                                     { text = " for " },
@@ -11575,6 +13578,7 @@ elseif value_40 then
                                                   preview = true
                                                 }
                                               }
+                                              local draw_entries = {}
                                               add_on_screen_log = function(kind, segments, red, green, blue, detail_segments)
                                                 local entry = {
                                                   kind = kind,
@@ -11601,10 +13605,25 @@ elseif value_40 then
                                                 end
                                               end
                                               draw_on_screen_logs = function()
+                                                local entries = draw_entries
+                                                for index = #entries, 1, -1 do
+                                                  entries[index] = nil
+                                                end
+                                                if #value_111 == 0 and not value_112 then
+                                                  local preview_visible = false
+                                                  for index = 1, #preview_logs do
+                                                    if preview_logs[index].alpha > 0.01 then
+                                                      preview_visible = true
+                                                      break
+                                                    end
+                                                  end
+                                                  if not preview_visible then
+                                                    return
+                                                  end
+                                                end
                                                 local now = realtime()
                                                 local frame_time = frametime()
                                                 local menu_open = ui.is_menu_open()
-                                                local entries = {}
                                                 local max_width = 0
                                                 local line_accent = log_events.line_accent.get(log_events.line_accent)
                                                 local function clamp(value, lower, upper)
@@ -11614,26 +13633,50 @@ elseif value_40 then
                                                   local width, height = 0, 0
                                                   for segment_index = 1, #(segments or {}) do
                                                     local segment = segments[segment_index]
-                                                    local segment_width, segment_height = measure_text("bd", segment.text or "")
-                                                    segment.width = segment_width
+                                                    local segment_width, segment_height = segment.width, segment.height
+                                                    if segment_width == nil or segment_height == nil then
+                                                      segment_width, segment_height = measure_text("bd", segment.text or "")
+                                                      segment.width = segment_width
+                                                      segment.height = segment_height
+                                                    end
                                                     width = width + segment_width
                                                     height = max(height, segment_height or 0)
                                                   end
                                                   return width, height
                                                 end
                                                 local function measure_entry(entry)
+                                                  if entry.layout_valid and entry.layout_line_accent == line_accent then
+                                                    max_width = max(max_width, entry.width)
+                                                    return
+                                                  end
                                                   local main_width, main_height = measure_segments(entry.segments)
                                                   local detail_width, detail_height = measure_segments(entry.detail_segments)
                                                   local has_detail = entry.detail_segments ~= nil and #entry.detail_segments > 0
                                                   local font_height = max(main_height, detail_height)
+                                                  local scale = max(1, font_height / 12)
                                                   local icon_size = max(8, floor(font_height * 0.6 + 0.5))
-                                                  local accent_width = line_accent and 7 or 0
-                                                  local content_width = max(main_width, detail_width + (has_detail and 9 or 0))
-                                                  entry.width = 11 + accent_width + 4 + icon_size + 3 + content_width + 11
-                                                  entry.height = max(font_height * (has_detail and 2 or 1) + (has_detail and 3 or 0), icon_size) + 14
+                                                  local icon_slot_size = icon_size + scale
+                                                  local icon_gap = 3 * scale
+                                                  local detail_gap = 3 * scale
+                                                  local content_left = line_accent and 8 * scale or 11 * scale
+                                                  local content_width = max(main_width, detail_width + (has_detail and 9 * scale or 0))
+                                                  local text_height = main_height + (has_detail and detail_height + detail_gap or 0)
+                                                  entry.width = content_left + icon_slot_size + icon_gap + content_width + 11 * scale
+                                                  entry.height = max(text_height, icon_slot_size) + 14 * scale
                                                   entry.icon_size = icon_size
                                                   entry.main_height = main_height
                                                   entry.detail_height = detail_height
+                                                  entry.text_height = text_height
+                                                  entry.scale = scale
+                                                  entry.content_left = content_left
+                                                  entry.icon_slot_size = icon_slot_size
+                                                  entry.icon_gap = icon_gap
+                                                  entry.detail_gap = detail_gap
+                                                  entry.detail_arrow_width = 9 * scale
+                                                  entry.padding_y = 7 * scale
+                                                  entry.has_detail = has_detail
+                                                  entry.layout_valid = true
+                                                  entry.layout_line_accent = line_accent
                                                   max_width = max(max_width, entry.width)
                                                 end
                                                 for index = #value_111, 1, -1 do
@@ -11654,10 +13697,10 @@ elseif value_40 then
                                                   local entry = preview_logs[index]
                                                   if entry.kind == "hit" then
                                                     local hit_r, hit_g, hit_b = log_events.hit.color.get(log_events.hit.color)
-                                                    entry.color = { hit_r, hit_g, hit_b }
+                                                    entry.color[1], entry.color[2], entry.color[3] = hit_r, hit_g, hit_b
                                                   else
                                                     local miss_r, miss_g, miss_b = log_events.miss.color.get(log_events.miss.color)
-                                                    entry.color = { miss_r, miss_g, miss_b }
+                                                    entry.color[1], entry.color[2], entry.color[3] = miss_r, miss_g, miss_b
                                                   end
                                                   entry.alpha = clamp(entry.alpha + (show_preview and frame_time / 0.14 or -frame_time / 0.18), 0, 1)
                                                   if entry.alpha > 0.01 then
@@ -11672,7 +13715,7 @@ elseif value_40 then
                                                 local screen_width, screen_height = client.screen_size()
                                                 local panel_height = 0
                                                 for index = 1, #entries do
-                                                  panel_height = panel_height + entries[index].height + (index > 1 and 8 or 0)
+                                                  panel_height = panel_height + entries[index].height + (index > 1 and 8 * entries[index].scale or 0)
                                                 end
                                                 local x = event_log_position.x * screen_width - max_width / 2
                                                 local y = event_log_position.y * screen_height
@@ -11707,11 +13750,13 @@ elseif value_40 then
                                                 for index = 1, #entries do
                                                   local entry = entries[index]
                                                   local target_y = row_y
-                                                  entry.y = entry.y or target_y - 6
+                                                  local row_offset = 6 * entry.scale
+                                                  entry.y = entry.y or target_y - row_offset
                                                   local row_alpha = entry.alpha
-                                                  entry.y = entry.y + ((entry.active and target_y or target_y - 6) - entry.y) * min(1, frame_time / 0.16)
+                                                  entry.y = entry.y + ((entry.active and target_y or target_y - row_offset) - entry.y) * min(1, frame_time / 0.16)
                                                   local alpha = floor(entry.alpha * 255)
                                                   local red, green, blue = entry.color[1], entry.color[2], entry.color[3]
+                                                  local scale = entry.scale
                                                   local card_x = x
                                                   if alignment == "center" then
                                                     card_x = x + (max_width - entry.width) / 2
@@ -11719,26 +13764,36 @@ elseif value_40 then
                                                     card_x = x + max_width - entry.width
                                                   end
                                                   local card_y = entry.y
+                                                  renderer.rectangle(card_x - scale, card_y + scale, entry.width + scale * 2, entry.height, 0, 0, 0, 36 * row_alpha)
                                                   renderer.rectangle(card_x, card_y, entry.width, entry.height, 18, 18, 18, 220 * row_alpha)
                                                   renderer.rectangle(card_x, card_y + entry.height - 1, entry.width, 1, 0, 0, 0, 90 * row_alpha)
                                                   if line_accent then
-                                                    local accent_x = card_x + 3
+                                                    local unit = max(1, floor(scale + 0.5))
+                                                    local line_width = max(2, floor(2 * scale + 0.5))
+                                                    local accent_alpha = min(alpha, 200)
                                                     local accent_h = max(1, floor(entry.height * 0.45 + 0.5))
-                                                    renderer.rectangle(accent_x, card_y + floor((entry.height - accent_h) / 2), 1, accent_h, red, green, blue, alpha)
-                                                    renderer.rectangle(accent_x + 1, card_y + 2, 1, entry.height - 4, red, green, blue, alpha * 0.28)
-                                                    renderer.rectangle(accent_x + 2, card_y + 3, 2, entry.height - 6, red, green, blue, alpha * 0.12)
+                                                    local accent_y = card_y + floor((entry.height - accent_h) / 2)
+                                                    local half_h = max(1, floor(accent_h / 2))
+                                                    renderer.gradient(card_x, accent_y, unit, half_h, red, green, blue, 0, red, green, blue, accent_alpha, false)
+                                                    renderer.gradient(card_x, accent_y + half_h, unit, max(1, accent_h - half_h), red, green, blue, accent_alpha, red, green, blue, 0, false)
+                                                    local fade_y = card_y + floor(entry.height * 0.22)
+                                                    local fade_h = max(1, entry.height - (fade_y - card_y) * 2)
+                                                    renderer.gradient(card_x + unit, fade_y, unit, fade_h, red, green, blue, accent_alpha * 0.55, red, green, blue, accent_alpha * 0.55, false)
+                                                    renderer.gradient(card_x + unit * 2, card_y + unit, line_width, max(1, entry.height - unit * 2), red, green, blue, accent_alpha * 0.15, red, green, blue, accent_alpha * 0.8, false)
+                                                    renderer.gradient(card_x + unit * 2 + line_width, fade_y, unit, fade_h, red, green, blue, 0, red, green, blue, accent_alpha * 0.26, false)
+                                                    renderer.gradient(card_x + unit * 3 + line_width, fade_y, unit, fade_h, red, green, blue, 0, red, green, blue, accent_alpha * 0.13, false)
                                                   end
-                                                  local icon_x = card_x + 11 + (line_accent and 7 or 0) + 4 + entry.icon_size / 2
+                                                  local icon_x = card_x + entry.content_left + entry.icon_slot_size / 2
                                                   local icon_y = card_y + entry.height / 2
                                                   local icon = get_event_log_icon(entry.kind, entry.icon_size)
                                                   if icon ~= nil then
                                                     renderer.texture(icon, icon_x - entry.icon_size / 2, icon_y - entry.icon_size / 2, entry.icon_size, entry.icon_size, red, green, blue, alpha, "f")
                                                   else
                                                     renderer.circle(icon_x, icon_y, red, green, blue, alpha, entry.icon_size / 2, 0, 1)
-                                                    renderer.text(icon_x, icon_y - floor(entry.icon_size / 2), 24, 24, 24, alpha, "bd", 0, entry.kind == "miss" and "x" or "+")
+                                                    renderer.text(icon_x, icon_y - floor(entry.icon_size / 2), 24, 24, 24, alpha, "cbd", 0, entry.kind == "miss" and "x" or "+")
                                                   end
-                                                  local text_x = card_x + 11 + (line_accent and 7 or 0) + 4 + entry.icon_size + 3
-                                                  local main_y = card_y + floor((entry.height - entry.main_height - (entry.detail_segments and entry.detail_height + 3 or 0)) / 2)
+                                                  local text_x = card_x + entry.content_left + entry.icon_slot_size + entry.icon_gap
+                                                  local main_y = card_y + (entry.has_detail and entry.padding_y or floor((entry.height - entry.text_height) / 2))
                                                   local function draw_segments(segments, segment_y)
                                                     local segment_x = text_x
                                                     for segment_index = 1, #(segments or {}) do
@@ -11747,7 +13802,7 @@ elseif value_40 then
                                                       if segment.color == "accent" then
                                                         segment_red, segment_green, segment_blue = red, green, blue
                                                       elseif segment.color == "miss" then
-                                                        segment_red, segment_green, segment_blue = red, green, blue
+                                                        segment_red, segment_green, segment_blue = 255, 68, 78
                                                       end
                                                       text(segment_x, segment_y, segment_red, segment_green, segment_blue, alpha, "bd", nil, segment.text)
                                                       segment_x = segment_x + (segment.width or measure_text("bd", segment.text or ""))
@@ -11755,15 +13810,22 @@ elseif value_40 then
                                                   end
                                                   draw_segments(entry.segments, main_y)
                                                   if entry.detail_segments ~= nil then
-                                                    local detail_y = main_y + entry.main_height + 3
-                                                    text(text_x, detail_y, 190, 190, 190, floor(alpha * 0.82), "bd", nil, ">")
-                                                    local detail_text_x = text_x + 9
+                                                    local detail_y = main_y + entry.main_height + entry.detail_gap
+                                                    local arrow_unit = max(1, floor(scale + 0.5))
+                                                    local arrow_x = text_x + arrow_unit
+                                                    local arrow_y = detail_y + floor((entry.detail_height - arrow_unit * 8) / 2)
+                                                    local arrow_alpha = floor(alpha * 0.82)
+                                                    renderer.line(arrow_x, arrow_y, arrow_x, arrow_y + arrow_unit * 4, 190, 190, 190, arrow_alpha)
+                                                    renderer.line(arrow_x, arrow_y + arrow_unit * 4, arrow_x + arrow_unit * 5, arrow_y + arrow_unit * 4, 190, 190, 190, arrow_alpha)
+                                                    renderer.line(arrow_x + arrow_unit * 5, arrow_y + arrow_unit * 4, arrow_x + arrow_unit * 3, arrow_y + arrow_unit * 2, 190, 190, 190, arrow_alpha)
+                                                    renderer.line(arrow_x + arrow_unit * 5, arrow_y + arrow_unit * 4, arrow_x + arrow_unit * 3, arrow_y + arrow_unit * 6, 190, 190, 190, arrow_alpha)
+                                                    local detail_text_x = text_x + entry.detail_arrow_width
                                                     local original_text_x = text_x
                                                     text_x = detail_text_x
                                                     draw_segments(entry.detail_segments, detail_y)
                                                     text_x = original_text_x
                                                   end
-                                                  row_y = row_y + entry.height + 8
+                                                  row_y = row_y + entry.height + 8 * scale
                                                 end
                                               end
                                               callback_22(value_47, ((--[[ W382 ]] function(argument)
@@ -12348,9 +14410,86 @@ elseif value_40 then
                                     do
                                       local value_25
                                       do
-                                        enabled = "                                let context_panel = $.GetContextPanel();\n        \n                                let _set_icon = function(entity_index, icon) {\n                                    let xuid = GameStateAPI.GetPlayerXuidStringFromEntIndex(entity_index);\n                                    let ctx = context_panel.FindChildTraverse('ScoreboardContainer').FindChildTraverse('Scoreboard') || context_panel.FindChildTraverse('id-eom-scoreboard-container').FindChildTraverse('Scoreboard')\n                                    if (ctx == null)\n                                        return;\n        \n                                    ctx.FindChildrenWithClassTraverse('sb-row').forEach(function(e) {\n                                        if (e.m_xuid != xuid)\n                                            return false;\n        \n                                        e.Children().forEach(function(child) {\n                                            let attribute = child.GetAttributeString('data-stat', '');\n                                            if (attribute != 'rank')\n                                                return false;\n        \n                                            var image = child.FindChildTraverse('image');\n                                            if (!image || !image.IsValid())\n                                                return false;\n        \n                                            image.SetImage(icon === null ? '' : icon)\n                                            return true;\n                                        })\n                                    })\n        \n                                    return xuid;\n                                }\n        \n                                return {\n                                    set_icon: _set_icon\n                                }\n                            "
+                                        enabled = "                                let context_panel = $.GetContextPanel();\n        \n                                let _set_icon = function(entity_index, icon) {\n                                    let xuid = GameStateAPI.GetPlayerXuidStringFromEntIndex(entity_index);\n                                    let ctx = context_panel.FindChildTraverse('ScoreboardContainer');\n                                    ctx = ctx ? ctx.FindChildTraverse('Scoreboard') : null;\n                                    if (ctx == null) {\n                                        let eom = context_panel.FindChildTraverse('id-eom-scoreboard-container');\n                                        ctx = eom ? eom.FindChildTraverse('Scoreboard') : null;\n                                    }\n                                    if (ctx == null)\n                                        return;\n        \n                                    ctx.FindChildrenWithClassTraverse('sb-row').forEach(function(e) {\n                                        if (e.m_xuid != xuid)\n                                            return false;\n        \n                                        e.Children().forEach(function(child) {\n                                            let attribute = child.GetAttributeString('data-stat', '');\n                                            if (attribute != 'rank')\n                                                return false;\n        \n                                            var image = child.FindChildTraverse('image');\n                                            if (!image || !image.IsValid())\n                                                return false;\n        \n                                            image.SetImage(icon === null ? '' : icon)\n                                            return true;\n                                        })\n                                    })\n        \n                                    return xuid;\n                                }\n        \n                                let _get_xuid = function(entity_index) {\n                                    return GameStateAPI.GetPlayerXuidStringFromEntIndex(entity_index);\n                                }\n\n                                return {\n                                    set_icon: _set_icon,\n                                    get_xuid: _get_xuid\n                                }\n                            "
                                         value_97 = (panorama.loadstring(enabled, "CSGOHud"))()
                                         enabled = nil
+
+                                        -- Shared Logo: one image for all active Selene tiers.
+                                        local shared_logo_url = "https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPOSITORY/main/logo.png"
+                                        local shared_logo_api = "https://qhxapqprsbrtbookbinr.supabase.co/rest/v1/shared_logo_players?select=steamid64"
+                                        local shared_logo_key = "sb_publishable_wMsuRppIzujb6zwlmF-NCg_vTKnq7ob"
+                                        local shared_logo_json = require("json")
+                                        local shared_logo_players = {}
+                                        local shared_logo_applied = {}
+                                        local shared_logo_last_poll = 0
+                                        local shared_logo_last_enabled = false
+
+                                        local function shared_logo_clear()
+                                            for entindex in pairs(shared_logo_applied) do
+                                                pcall(value_97.set_icon, entindex, nil)
+                                            end
+                                            shared_logo_applied = {}
+                                        end
+
+                                        local function shared_logo_poll()
+                                            local selected = value_11(features_2.get(features_2), "Shared logo")
+                                            if not selected then
+                                                if shared_logo_last_enabled then
+                                                    shared_logo_players = {}
+                                                    shared_logo_clear()
+                                                end
+                                                shared_logo_last_enabled = false
+                                                return
+                                            end
+                                            shared_logo_last_enabled = true
+                                            local now = client.unix_time()
+                                            if now - shared_logo_last_poll < 30 then return end
+                                            shared_logo_last_poll = now
+                                            captured_http_089.get(shared_logo_api, {
+                                                headers = {
+                                                    ["apikey"] = shared_logo_key,
+                                                    ["Authorization"] = "Bearer " .. shared_logo_key
+                                                }
+                                            }, function(success, response)
+                                                if not success or not response or response.status ~= 200 or type(response.body) ~= "string" then
+                                                    return
+                                                end
+                                                local ok, rows = pcall(shared_logo_json.parse, response.body)
+                                                if not ok or type(rows) ~= "table" then return end
+                                                local fresh = {}
+                                                for _, row in ipairs(rows) do
+                                                    local id = type(row) == "table" and tostring(row.steamid64 or "") or ""
+                                                    if id:match("^%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d%d$") then
+                                                        fresh[id] = true
+                                                    end
+                                                end
+                                                shared_logo_players = fresh
+                                            end)
+                                        end
+
+                                        local function shared_logo_update()
+                                            if not value_11(features_2.get(features_2), "Shared logo") then
+                                                return
+                                            end
+                                            shared_logo_poll()
+                                            local players = get_players(false) or {}
+                                            for i = 1, #players do
+                                                local entindex = players[i]
+                                                local ok, xuid = pcall(value_97.get_xuid, entindex)
+                                                if ok and xuid then
+                                                    if shared_logo_players[tostring(xuid)] then
+                                                        pcall(value_97.set_icon, entindex, shared_logo_url)
+                                                        shared_logo_applied[entindex] = true
+                                                    elseif shared_logo_applied[entindex] then
+                                                        pcall(value_97.set_icon, entindex, nil)
+                                                        shared_logo_applied[entindex] = nil
+                                                    end
+                                                end
+                                            end
+                                        end
+
+                                        client.set_event_callback("net_update_end", shared_logo_update)
+                                        client.set_event_callback("shutdown", shared_logo_clear)
                                         local callback_21 = tostring_2
                                         value_98 = sub
                                         open = panorama
@@ -12692,6 +14831,10 @@ elseif value_40 then
                                           "♛𝐦𝐁𝐎𝐏𝐦𝐦𝟎𝟓𝐑𝐔𝐒♛",
                                           "𝙉𝙄𝘾𝙀 𝙍𝙀𝙎𝙊𝙇𝙑𝙀𝙍 𝙃𝘼𝙃𝘼𝙃𝘼",
                                           "𝙜_𝙂 𝘽𝙤𝙏",
+                                          "ｓｋｅｅｔ ｄｏｎｔ ｎｅｅｄ ｕｐｄａｔｅ (◣_◢)",
+                                          "𝕤𝕔𝕙𝕝𝕒𝕗 𝕧𝕖𝕣𝕕𝕒𝕞𝕞𝕥𝕖𝕤 𝕒𝕣𝕤𝕔𝕙𝕝𝕠𝕔𝕙",
+                                          "𝔸ℕ𝕋𝕀-ℙℍ𝕆𝕋𝕆𝔾ℝ𝔸ℙℍ 𝕄𝕆𝔻𝔼 𝔼ℕ𝔸𝔹𝕃𝔼𝔻",
+                                          "𝐔 𝐭𝐞𝐛𝐲𝐚 𝐳𝐚𝐥𝐞𝐭!",
                                           "𝔸𝕊-𝕊𝔸𝕃𝔸𝕄 𝔸𝕃𝔸𝕀𝕂𝕌𝕄",
                                           "ＧｏＲａｇｅ ＯＲ ＧｏＨｏｍｅ",
                                           "𝐏𝐨𝐁𝐇𝐛𝐥𝐮_𝐉𝐥𝐚𝐜𝐚𝐇",
@@ -13067,7 +15210,7 @@ if not __selene_check_dependencies() then
   return
 end
 
-local function outlaw_intelligence_module(controls)
+local function selene_intelligence_module(controls)
   if not controls or not controls.features or not controls.types then return end
   local ui_get, ui_set = ui.get, ui.set
   local ui_reference = ui.reference
@@ -13085,14 +15228,13 @@ local function outlaw_intelligence_module(controls)
 
   local intelligence_features = controls.features
   local intelligence_type = controls.types
-
-  local function intelligence_enabled()
-    local values = intelligence_features.get(intelligence_features)
-    for i = 1, #values do
-      if values[i] == "Intelligence improvements" then return true end
-    end
-    return false
-  end
+  local intelligence_is_enabled = false
+  local selected_types = {}
+  local setup_registered = false
+  local bullet_impact_registered = false
+  local player_hurt_registered = false
+  local state_initialized = false
+  local last_ui_values = {}
 
   local function get_ref(...)
     local ok, a, b, c, d = pcall(ui_reference, ...)
@@ -13105,7 +15247,6 @@ local function outlaw_intelligence_module(controls)
   end
 
   local fake_lag_refs = get_ref("AA", "Fake lag", "Limit")
-  local dt_refs = get_ref("RAGE", "Aimbot", "Double tap")
   local ping_refs = get_ref("MISC", "Miscellaneous", "Ping spike")
   local jitter_refs = get_ref("AA", "Anti-aimbot angles", "Yaw jitter")
 
@@ -13120,8 +15261,6 @@ local function outlaw_intelligence_module(controls)
   local ping_amount, ping_original = find_ref(ping_refs, "number")
   local jitter_mode, jitter_mode_original = find_ref(jitter_refs, "string")
   local jitter_amount, jitter_amount_original = find_ref(jitter_refs, "number")
-  local dt_enabled = dt_refs[1]
-
   local original_fake_lag
   if fake_lag_limit then
     local ok, value = pcall(ui_get, fake_lag_limit)
@@ -13129,15 +15268,16 @@ local function outlaw_intelligence_module(controls)
   end
 
   local threat_until = 0
-  local visible_state = {}
-  local peak_detected_at = 0
 
   local function is_selected(name)
-    local values = intelligence_type.get(intelligence_type)
-    for i = 1, #values do
-      if values[i] == name then return true end
+    return selected_types[name] == true
+  end
+
+  local function set_if_changed(reference, value)
+    if reference and last_ui_values[reference] ~= value then
+      pcall(ui_set, reference, value)
+      last_ui_values[reference] = value
     end
-    return false
   end
 
   local function restore()
@@ -13153,6 +15293,7 @@ local function outlaw_intelligence_module(controls)
     if jitter_amount and jitter_amount_original ~= nil then
       pcall(ui_set, jitter_amount, jitter_amount_original)
     end
+    last_ui_values = {}
   end
 
   local function velocity(player)
@@ -13187,10 +15328,6 @@ local function outlaw_intelligence_module(controls)
 
   local function update_fake_lag(player, cmd)
     if not fake_lag_limit then return end
-    if not is_selected("Fake Lag") then
-      if original_fake_lag ~= nil then pcall(ui_set, fake_lag_limit, original_fake_lag) end
-      return
-    end
     local flags = get_prop(player, "m_fFlags") or 0
     local grounded = band(flags, 1) == 1
     local speed = velocity(player)
@@ -13200,77 +15337,53 @@ local function outlaw_intelligence_module(controls)
     elseif not grounded or speed > 5 then
       limit = 14
     end
-    pcall(ui_set, fake_lag_limit, min(14, max(3, limit)))
+    set_if_changed(fake_lag_limit, min(14, max(3, limit)))
   end
 
-  local function update_ping_spike(player)
+  local cached_ping_amount
+  local next_ping_update = 0
+  local function update_ping_spike(player, now)
     if not ping_amount then return end
-    if not is_selected("Ping Spike") then
-      if ping_original ~= nil then pcall(ui_set, ping_amount, ping_original) end
-      return
+    if now >= next_ping_update then
+      local _, distance = nearest_enemy(player)
+      cached_ping_amount = 0
+      if distance then
+        if distance > 1800 then cached_ping_amount = 200
+        elseif distance > 1200 then cached_ping_amount = 160
+        elseif distance > 700 then cached_ping_amount = 80 end
+      end
+      next_ping_update = now + 0.1
     end
-    local _, distance = nearest_enemy(player)
-    local amount = 0
-    if distance then
-      if distance > 1800 then amount = 200
-      elseif distance > 1200 then amount = 160
-      elseif distance > 700 then amount = 80 end
-    end
-    pcall(ui_set, ping_amount, amount)
+    set_if_changed(ping_amount, cached_ping_amount or 0)
   end
 
   local function update_jitter()
     if not jitter_amount then return end
-    if not is_selected("Jitter Correction") then
-      if jitter_mode and jitter_mode_original ~= nil then pcall(ui_set, jitter_mode, jitter_mode_original) end
-      if jitter_amount_original ~= nil then pcall(ui_set, jitter_amount, jitter_amount_original) end
-      return
+    local active = curtime() < threat_until
+    if jitter_mode then
+      set_if_changed(jitter_mode, active and "Offset" or jitter_mode_original)
     end
-    if curtime() < threat_until then
-      if jitter_mode then pcall(ui_set, jitter_mode, "Offset") end
-      pcall(ui_set, jitter_amount, 90)
-    else
-      if jitter_mode and jitter_mode_original ~= nil then pcall(ui_set, jitter_mode, jitter_mode_original) end
-      if jitter_amount_original ~= nil then pcall(ui_set, jitter_amount, jitter_amount_original) end
-    end
-  end
-
-  local function update_peak_detection(player)
-    if not is_selected("Immediate Teleport") or not dt_enabled then return end
-    local ok, active = pcall(ui_get, dt_enabled)
-    if not ok or not active then
-      visible_state = {}
-      return
-    end
-    local enemies = get_players(true)
-    for i = 1, #enemies do
-      local enemy = enemies[i]
-      if is_alive(enemy) and is_enemy(enemy) then
-        local now_visible = false
-        if client.visible then
-          local visible_ok, result = pcall(client.visible, enemy)
-          now_visible = visible_ok and result or false
-        end
-        if now_visible and not visible_state[enemy] then
-          peak_detected_at = curtime()
-        end
-        visible_state[enemy] = now_visible
-      end
+    if jitter_amount_original ~= nil then
+      set_if_changed(jitter_amount, active and 90 or jitter_amount_original)
     end
   end
 
   local function setup_command(cmd)
-    if not intelligence_enabled() then restore(); return end
     local player = get_local_player()
     if not player or not is_alive(player) then return end
-    update_fake_lag(player, cmd)
-    update_ping_spike(player)
-    update_peak_detection(player)
-    update_jitter()
+    if is_selected("Fake Lag") then
+      update_fake_lag(player, cmd)
+    end
+    if is_selected("Ping Spike") then
+      update_ping_spike(player, globals.realtime())
+    end
+    if is_selected("Jitter Correction") then
+      update_jitter()
+    end
   end
 
   local function bullet_impact(event)
-    if not intelligence_enabled() or not is_selected("Jitter Correction") then return end
+    if not intelligence_is_enabled or not is_selected("Jitter Correction") then return end
     local player = get_local_player()
     if not player or not is_alive(player) then return end
     local attacker = userid_to_entindex(event.userid)
@@ -13284,7 +15397,7 @@ local function outlaw_intelligence_module(controls)
   end
 
   local function player_hurt(event)
-    if not intelligence_enabled() or not is_selected("Jitter Correction") then return end
+    if not intelligence_is_enabled or not is_selected("Jitter Correction") then return end
     local player = get_local_player()
     if not player then return end
     local victim = userid_to_entindex(event.userid)
@@ -13294,12 +15407,69 @@ local function outlaw_intelligence_module(controls)
     end
   end
 
-  set_event_callback("setup_command", setup_command)
-  set_event_callback("bullet_impact", bullet_impact)
-  set_event_callback("player_hurt", player_hurt)
+  local function refresh_activation()
+    local was_initialized = state_initialized
+    if was_initialized then
+      restore()
+    end
+
+    intelligence_is_enabled = false
+    local features = intelligence_features.get(intelligence_features)
+    if type(features) == "table" then
+      for i = 1, #features do
+        if features[i] == "Intelligence improvements" then
+          intelligence_is_enabled = true
+          break
+        end
+      end
+    end
+
+    selected_types = {}
+    local types = intelligence_type.get(intelligence_type)
+    if type(types) == "table" then
+      for i = 1, #types do
+        selected_types[types[i]] = true
+      end
+    end
+
+    local needs_setup = intelligence_is_enabled and (
+      is_selected("Fake Lag") or is_selected("Ping Spike") or is_selected("Jitter Correction")
+    )
+    if needs_setup ~= setup_registered then
+      setup_registered = needs_setup
+      local set_callback = needs_setup and client.set_event_callback or client.unset_event_callback
+      set_callback("setup_command", setup_command)
+    end
+
+    local needs_jitter_events = intelligence_is_enabled and is_selected("Jitter Correction")
+    if needs_jitter_events ~= bullet_impact_registered then
+      bullet_impact_registered = needs_jitter_events
+      local set_callback = needs_jitter_events and client.set_event_callback or client.unset_event_callback
+      set_callback("bullet_impact", bullet_impact)
+    end
+    if needs_jitter_events ~= player_hurt_registered then
+      player_hurt_registered = needs_jitter_events
+      local set_callback = needs_jitter_events and client.set_event_callback or client.unset_event_callback
+      set_callback("player_hurt", player_hurt)
+    end
+
+    if not needs_setup then
+      if not was_initialized then
+        restore()
+      end
+      threat_until = 0
+    end
+    state_initialized = true
+  end
+
+  intelligence_features.callback(intelligence_features, refresh_activation, true)
+  intelligence_type.callback(intelligence_type, refresh_activation, true)
   set_event_callback("shutdown", restore)
 end
 
 selene_main()
-outlaw_intelligence_module(outlaw_intelligence_controls)
+selene_intelligence_module(selene_intelligence_controls)
+if aimbot_helper_setup_callback ~= nil then
+  client.set_event_callback("setup_command", aimbot_helper_setup_callback)
+end
 return
